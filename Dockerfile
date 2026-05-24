@@ -1,5 +1,6 @@
 # Base image
 FROM node:20-slim AS base
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
 # Install dependencies only when needed
 FROM base AS deps
