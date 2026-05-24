@@ -70,6 +70,28 @@ export default function Home() {
   const [regPasscode, setRegPasscode] = useState("");
   const [regLoading, setRegLoading] = useState(false);
 
+  // Session Creation Form States
+  const [showSessionModal, setShowSessionModal] = useState(false);
+  const [newSessionName, setNewSessionName] = useState("");
+  const [newSessionDate, setNewSessionDate] = useState("");
+  const [newSessionDesc, setNewSessionDesc] = useState("");
+  const [sessionSubmitting, setSessionSubmitting] = useState(false);
+
+  const getTodayString = () => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const openSessionModal = () => {
+    setNewSessionDate(getTodayString());
+    setNewSessionName("");
+    setNewSessionDesc("");
+    setShowSessionModal(true);
+  };
+
   // Form States
   const [currentSessionId, setCurrentSessionId] = useState("");
   const [selectedProfessor, setSelectedProfessor] = useState("김태훈");
@@ -234,6 +256,47 @@ export default function Home() {
       showToast(`등록 실패: ${err.message}`);
     } finally {
       setRegLoading(false);
+    }
+  };
+
+  // Handle session creation submission
+  const handleCreateSession = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSessionName.trim() || !newSessionDate.trim()) {
+      showToast("세션명과 날짜를 모두 입력해주세요.");
+      return;
+    }
+    setSessionSubmitting(true);
+    try {
+      const res = await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionName: newSessionName.trim(),
+          date: newSessionDate.trim(),
+          description: newSessionDesc.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success && data.session) {
+        showToast("수업 세션이 생성되었습니다!");
+        
+        const created: Session = data.session;
+        setSessions(prev => [created, ...prev]);
+        
+        // Select the newly created session
+        setCurrentSessionId(created.id);
+        setOverallText("");
+        
+        setShowSessionModal(false);
+      } else {
+        throw new Error(data.error || "세션 생성 실패");
+      }
+    } catch (err: any) {
+      console.error(err);
+      showToast(`세션 생성 오류: ${err.message}`);
+    } finally {
+      setSessionSubmitting(false);
     }
   };
 
@@ -540,7 +603,16 @@ export default function Home() {
 
       {/* 3. Session Selection Box */}
       <div className="glass-card" style={{ marginBottom: "12px" }}>
-        <h3 style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "12px" }}>수업 세션 설정</h3>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+          <h3 style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>수업 세션 설정</h3>
+          <button 
+            onClick={openSessionModal}
+            className="btn btn-secondary" 
+            style={{ padding: "4px 10px", fontSize: "11px", display: "flex", alignItems: "center", gap: "4px" }}
+          >
+            <Plus style={{ width: "12px", height: "12px" }} /> 새 세션 추가
+          </button>
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
           <div>
             <label>수업 날짜 / 세션</label>
@@ -942,6 +1014,67 @@ export default function Home() {
                   style={{ flex: 1.5, padding: "10px", fontWeight: 700 }}
                 >
                   {regLoading ? <Loader2 className="animated-spin" style={{ width: "16px", height: "16px" }} /> : "등록 완료"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* New Session Creation Overlay Modal */}
+      {showSessionModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0, 0, 0, 0.7)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1900 }} className="no-print">
+          <div className="glass-card animated-slide-up" style={{ width: "100%", maxWidth: "440px", padding: "30px 24px", border: "1px solid rgba(59, 130, 246, 0.3)" }}>
+            <h4 style={{ fontSize: "18px", marginBottom: "16px", fontWeight: 700, textAlign: "center" }}>새 수업 세션 추가</h4>
+            
+            <form onSubmit={handleCreateSession} style={{ display: "flex", flexDirection: "column", gap: "14px", textAlign: "left" }}>
+              <div>
+                <label>수업 날짜</label>
+                <input 
+                  type="date" 
+                  required
+                  value={newSessionDate} 
+                  onChange={(e) => setNewSessionDate(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label>수업 세션명</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="예: 0524 대안크리틱 - 평면 레이아웃"
+                  value={newSessionName} 
+                  onChange={(e) => setNewSessionName(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label>과제/세션 설명 (선택)</label>
+                <textarea 
+                  placeholder="오늘 진행할 과제나 매스 스터디 핵심 내용을 적어주세요."
+                  value={newSessionDesc} 
+                  onChange={(e) => setNewSessionDesc(e.target.value)}
+                  style={{ minHeight: "80px", fontSize: "13px" }}
+                />
+              </div>
+
+              <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
+                <button 
+                  type="button" 
+                  onClick={() => setShowSessionModal(false)} 
+                  className="btn btn-secondary" 
+                  style={{ flex: 1, padding: "10px" }}
+                >
+                  취소
+                </button>
+                <button 
+                  type="submit" 
+                  disabled={sessionSubmitting}
+                  className="btn btn-primary" 
+                  style={{ flex: 1.5, padding: "10px", fontWeight: 700 }}
+                >
+                  {sessionSubmitting ? <Loader2 className="animated-spin" style={{ width: "16px", height: "16px" }} /> : "세션 추가"}
                 </button>
               </div>
             </form>

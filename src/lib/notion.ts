@@ -654,5 +654,43 @@ export async function verifyProfessorPermissionByEvaluation(
   }
 }
 
+// Add a new session to Notion DB2
+export async function createSession(sessionName: string, date: string, description: string = ""): Promise<Session | null> {
+  const dbSessions = process.env.NOTION_DB_SESSIONS;
+  if (!notion || !dbSessions) {
+    console.warn("Notion is not configured for creating sessions.");
+    return null;
+  }
+
+  try {
+    const response = await notion.pages.create({
+      parent: { database_id: dbSessions },
+      properties: {
+        "세션명": {
+          title: [{ text: { content: sessionName } }],
+        },
+        "날짜": {
+          date: { start: date },
+        },
+        "과제설명": {
+          rich_text: [{ text: { content: description } }],
+        },
+      },
+    });
+
+    return {
+      id: response.id,
+      sessionName,
+      date,
+      overall: "",
+      description,
+    };
+  } catch (error) {
+    console.error("Error creating session in Notion:", error);
+    throw error;
+  }
+}
+
+
 
 
