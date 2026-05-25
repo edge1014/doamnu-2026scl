@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Storage } from "@google-cloud/storage";
 import { promises as fs } from "fs";
 import path from "path";
 import sharp from "sharp";
@@ -7,30 +6,113 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { fetchProfessors } from "@/lib/notion";
 
-// Initialize GCS client
-const bucketName = process.env.GCS_BUCKET_NAME;
+const driveImageRootFolderId = process.env.GOOGLE_DRIVE_IMAGE_ROOT_FOLDER_ID;
+const driveImageRootFolderName = process.env.GOOGLE_DRIVE_IMAGE_ROOT_FOLDER_NAME || "doamnu-scl-critic-image-2026";
 
-const storageConfig: any = {};
-if (process.env.GCS_PROJECT_ID) {
-  storageConfig.projectId = process.env.GCS_PROJECT_ID;
+function escapeDriveQueryValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
-if (process.env.GCS_CLIENT_EMAIL && process.env.GCS_PRIVATE_KEY) {
-  storageConfig.credentials = {
-    client_email: process.env.GCS_CLIENT_EMAIL,
-    private_key: process.env.GCS_PRIVATE_KEY.replace(/\\n/g, "\n"),
+
+async function findOrCreateDriveFolder(accessToken: string, name: string, parentId?: string): Promise<string> {
+  const escapedName = escapeDriveQueryValue(name);
+  const parentClause = parentId ? ` and '${parentId}' in parents` : "";
+  const query = encodeURIComponent(
+    `name = '${escapedName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false${parentClause}`
+  );
+
+  const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const searchData = await searchRes.json();
+  if (!searchRes.ok || searchData.error) {
+    throw new Error(searchData.error?.message || "구글 드라이브 폴더 조회 실패");
+  }
+  if (searchData.files?.length > 0) {
+    return searchData.files[0].id;
+  }
+
+  const metadata: any = {
+    name,
+    mimeType: "application/vnd.google-apps.folder",
+  };
+  if (parentId) metadata.parents = [parentId];
+
+  const createRes = await fetch("https://www.googleapis.com/drive/v3/files?fields=id", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(metadata),
+  });
+  const createData = await createRes.json();
+  if (!createRes.ok || createData.error) {
+    throw new Error(createData.error?.message || "구글 드라이브 폴더 생성 실패");
+  }
+
+  return createData.id;
+}
+
+async function uploadImageToDrive(accessToken: string, folderId: string, filename: string, imageBuffer: Buffer) {
+  const metadata = {
+    name: filename,
+    parents: [folderId],
+    mimeType: "image/jpeg",
+  };
+
+  const boundary = "multipart_boundary_scl_image";
+  const delimiter = `\r\n--${boundary}\r\n`;
+  const closeDelimiter = `\r\n--${boundary}--`;
+
+  const multipartBody = Buffer.concat([
+    Buffer.from(delimiter + "Content-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify(metadata) + delimiter),
+    Buffer.from("Content-Type: image/jpeg\r\n\r\n"),
+    imageBuffer,
+    Buffer.from(closeDelimiter),
+  ]);
+
+  const uploadRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink,webContentLink", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": `multipart/related; boundary=${boundary}`,
+      "Content-Length": String(multipartBody.length),
+    },
+    body: multipartBody,
+  });
+  const uploadData = await uploadRes.json();
+  if (!uploadRes.ok || uploadData.error) {
+    throw new Error(uploadData.error?.message || "구글 드라이브 이미지 업로드 실패");
+  }
+
+  await fetch(`https://www.googleapis.com/drive/v3/files/${uploadData.id}/permissions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      role: "reader",
+      type: "anyone",
+    }),
+  });
+
+  return {
+    fileId: uploadData.id,
+    imageUrl: `https://drive.google.com/uc?export=view&id=${uploadData.id}`,
+    webViewLink: uploadData.webViewLink,
   };
 }
-
-const storage = bucketName ? new Storage(storageConfig) : null;
 
 export async function POST(req: NextRequest) {
   try {
     const session: any = await getServerSession(authOptions);
     const sessionEmail = session?.user?.email;
 
-    if (!sessionEmail) {
-      return NextResponse.json({ error: "로그인이 필요합니다." }, { status: 401 });
+    if (!sessionEmail || !session?.accessToken) {
+      return NextResponse.json({ error: "로그인이 필요합니다. 구글 로그인을 다시 확인해 주세요." }, { status: 401 });
     }
+    const accessToken = session.accessToken;
 
     const formData = await req.formData();
     const studentCls = formData.get("studentCls") as string;
@@ -72,29 +154,25 @@ export async function POST(req: NextRequest) {
     const dateStr = sessionDate ? sessionDate.trim() : new Date().toISOString().split("T")[0];
     const clsStr = studentCls ? studentCls.trim() : "1분반";
 
-    // Target key in GCS: 2026-05-24/대표이미지/1분반/01_강민우.jpg
-    const targetPath = `${dateStr}/대표이미지/${clsStr}/${filename}`;
+    // 3. Upload to Google Drive:
+    // root/date/대표이미지/class/01_학생.jpg
+    try {
+      const rootFolderId = driveImageRootFolderId || await findOrCreateDriveFolder(accessToken, driveImageRootFolderName);
+      const dateFolderId = await findOrCreateDriveFolder(accessToken, dateStr, rootFolderId);
+      const imageFolderId = await findOrCreateDriveFolder(accessToken, "대표이미지", dateFolderId);
+      const classFolderId = await findOrCreateDriveFolder(accessToken, clsStr, imageFolderId);
+      const driveFile = await uploadImageToDrive(accessToken, classFolderId, filename, resizedBuffer);
 
-    // 3. Upload to GCS if configured
-    if (storage && bucketName) {
-      try {
-        const bucket = storage.bucket(bucketName);
-        const gcsFile = bucket.file(targetPath);
-
-        await gcsFile.save(resizedBuffer, {
-          metadata: {
-            contentType: "image/jpeg",
-          },
-        });
-
-        const publicUrl = `https://storage.googleapis.com/${bucketName}/${targetPath}`;
-        return NextResponse.json({ imageUrl: publicUrl });
-      } catch (gcsError: any) {
-        console.error("GCS upload failed, falling back to local storage:", gcsError);
-      }
+      return NextResponse.json({
+        imageUrl: driveFile.imageUrl,
+        driveFileId: driveFile.fileId,
+        webViewLink: driveFile.webViewLink,
+      });
+    } catch (driveError: any) {
+      console.error("Google Drive upload failed, falling back to local storage:", driveError);
     }
 
-    // 4. Fallback: Save to local public/uploads directory (for local dev)
+    // 4. Fallback: Save to local public/uploads directory (for local dev only)
     const uploadsDir = path.join(process.cwd(), "public", "uploads", dateStr, "대표이미지", clsStr);
     await fs.mkdir(uploadsDir, { recursive: true });
 
