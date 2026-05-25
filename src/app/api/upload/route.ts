@@ -117,6 +117,9 @@ export async function POST(req: NextRequest) {
     if (!sessionEmail || !session?.accessToken) {
       return NextResponse.json({ error: "로그인이 필요합니다. 구글 로그인을 다시 확인해 주세요." }, { status: 401 });
     }
+    if (session.error) {
+      return NextResponse.json({ error: "구글 인증이 만료되었습니다. 로그아웃 후 다시 로그인해 주세요." }, { status: 401 });
+    }
     const accessToken = session.accessToken;
 
     const formData = await req.formData();
