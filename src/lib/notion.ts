@@ -324,7 +324,7 @@ export async function saveEvaluation(params: {
     } else {
       // Create new page
       const res = await notion.pages.create({
-        parent: { database_id: dbEvaluations },
+        parent: { data_source_id: dbEvaluations },
         properties,
       });
       pageId = res.id;
@@ -690,7 +690,6 @@ export async function createSession(sessionName: string, date: string, descripti
     throw error;
   }
 }
-
 
 
 
