@@ -8,6 +8,7 @@ import { fetchProfessors } from "@/lib/notion";
 
 const driveImageRootFolderId = process.env.GOOGLE_DRIVE_IMAGE_ROOT_FOLDER_ID;
 const driveImageRootFolderName = process.env.GOOGLE_DRIVE_IMAGE_ROOT_FOLDER_NAME || "doamnu-scl-critic-image-2026";
+const isProduction = process.env.NODE_ENV === "production";
 
 function escapeDriveQueryValue(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
@@ -85,7 +86,7 @@ async function uploadImageToDrive(accessToken: string, folderId: string, filenam
     throw new Error(uploadData.error?.message || "구글 드라이브 이미지 업로드 실패");
   }
 
-  await fetch(`https://www.googleapis.com/drive/v3/files/${uploadData.id}/permissions`, {
+  const permissionRes = await fetch(`https://www.googleapis.com/drive/v3/files/${uploadData.id}/permissions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -96,6 +97,10 @@ async function uploadImageToDrive(accessToken: string, folderId: string, filenam
       type: "anyone",
     }),
   });
+  const permissionData = await permissionRes.json().catch(() => null);
+  if (!permissionRes.ok || permissionData?.error) {
+    throw new Error(permissionData?.error?.message || "구글 드라이브 이미지 공유 권한 설정 실패");
+  }
 
   return {
     fileId: uploadData.id,
@@ -169,7 +174,13 @@ export async function POST(req: NextRequest) {
         webViewLink: driveFile.webViewLink,
       });
     } catch (driveError: any) {
-      console.error("Google Drive upload failed, falling back to local storage:", driveError);
+      console.error("Google Drive upload failed:", driveError);
+      if (isProduction) {
+        return NextResponse.json(
+          { error: driveError.message || "구글 드라이브 이미지 업로드 실패" },
+          { status: 500 }
+        );
+      }
     }
 
     // 4. Fallback: Save to local public/uploads directory (for local dev only)
