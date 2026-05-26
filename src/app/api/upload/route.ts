@@ -10,11 +10,18 @@ const driveImageRootFolderId = process.env.GOOGLE_DRIVE_IMAGE_ROOT_FOLDER_ID;
 const driveImageRootFolderName = process.env.GOOGLE_DRIVE_IMAGE_ROOT_FOLDER_NAME || "doamnu-scl-critic-image-2026";
 const isProduction = process.env.NODE_ENV === "production";
 
+// In-memory cache: avoids redundant Drive API calls within a Cloud Run instance's lifetime
+const folderCache = new Map<string, string>();
+
 function escapeDriveQueryValue(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
 async function findOrCreateDriveFolder(accessToken: string, name: string, parentId?: string): Promise<string> {
+  const cacheKey = `${parentId ?? "root"}::${name}`;
+  const cached = folderCache.get(cacheKey);
+  if (cached) return cached;
+
   const escapedName = escapeDriveQueryValue(name);
   const parentClause = parentId ? ` and '${parentId}' in parents` : "";
   const query = encodeURIComponent(
@@ -29,7 +36,9 @@ async function findOrCreateDriveFolder(accessToken: string, name: string, parent
     throw new Error(searchData.error?.message || "구글 드라이브 폴더 조회 실패");
   }
   if (searchData.files?.length > 0) {
-    return searchData.files[0].id;
+    const id = searchData.files[0].id;
+    folderCache.set(cacheKey, id);
+    return id;
   }
 
   const metadata: any = {
@@ -51,6 +60,7 @@ async function findOrCreateDriveFolder(accessToken: string, name: string, parent
     throw new Error(createData.error?.message || "구글 드라이브 폴더 생성 실패");
   }
 
+  folderCache.set(cacheKey, createData.id);
   return createData.id;
 }
 
@@ -104,7 +114,7 @@ async function uploadImageToDrive(accessToken: string, folderId: string, filenam
 
   return {
     fileId: uploadData.id,
-    imageUrl: `https://drive.google.com/uc?export=view&id=${uploadData.id}`,
+    imageUrl: `https://drive.google.com/thumbnail?id=${uploadData.id}&sz=w800-h500`,
     webViewLink: uploadData.webViewLink,
   };
 }

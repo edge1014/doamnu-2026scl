@@ -50,6 +50,14 @@ interface Evaluation {
   sessionPageId: string;
 }
 
+// Converts any Drive share/view URL to a thumbnail URL that embeds reliably in <img>
+function normalizeDriveUrl(url: string): string {
+  if (!url || !url.includes("drive.google.com")) return url;
+  const m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/) ?? url.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (m) return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w800-h500`;
+  return url;
+}
+
 function StudentBoardContent() {
   const { data: sessionData } = useSession();
   const searchParams = useSearchParams();
@@ -844,10 +852,11 @@ function StudentBoardContent() {
               <h3 style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-light)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>대표 과제물 이미지</h3>
               <div style={{ flex: 1, background: "rgba(0,0,0,0.02)", border: "1px dashed var(--border-subtle)", borderRadius: "8px", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {filtered[filtered.length - 1].imageUrl ? (
-                  <img 
-                    src={filtered[filtered.length - 1].imageUrl} 
-                    alt="Latest student submission" 
-                    style={{ width: "100%", height: "100%", objectFit: "cover" }} 
+                  <img
+                    src={normalizeDriveUrl(filtered[filtered.length - 1].imageUrl!)}
+                    alt="Latest student submission"
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                   />
                 ) : (
                   <div style={{ textAlign: "center", color: "var(--text-light)" }}>
