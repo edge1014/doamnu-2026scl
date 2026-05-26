@@ -18,7 +18,10 @@ import {
   Moon, 
   ExternalLink,
   ChevronRight,
-  Info
+  Info,
+  Settings,
+  FileText,
+  CalendarPlus
 } from "lucide-react";
 
 interface Student {
@@ -77,6 +80,11 @@ export default function Home() {
   const [newSessionDesc, setNewSessionDesc] = useState("");
   const [sessionSubmitting, setSessionSubmitting] = useState(false);
 
+  // Settings Dropdown & Notion Page Generation States
+  const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
+  const [notionPageGenerating, setNotionPageGenerating] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
+
   const getTodayString = () => {
     const d = new Date();
     const year = d.getFullYear();
@@ -115,6 +123,17 @@ export default function Home() {
   const [exportCurrentName, setExportCurrentName] = useState("");
 
   const evalPanelRef = useRef<HTMLDivElement>(null);
+
+  // Close settings dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setShowSettingsDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // 1. Theme Configuration
   useEffect(() => {
@@ -447,6 +466,37 @@ export default function Home() {
     }
   };
 
+  // Notion 수업 페이지 자동 생성
+  const handleGenerateNotionPage = async () => {
+    if (!currentSessionId) {
+      showToast("먼저 수업 세션을 선택해 주세요.");
+      return;
+    }
+    setShowSettingsDropdown(false);
+    setNotionPageGenerating(true);
+    try {
+      const res = await fetch("/api/notion-page", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: currentSessionId }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showToast(data.message || "Notion 수업 페이지 생성 완료!");
+        if (data.url) {
+          window.open(data.url, "_blank", "noopener,noreferrer");
+        }
+      } else {
+        throw new Error(data.error || "생성 실패");
+      }
+    } catch (e: any) {
+      console.error(e);
+      showToast(`Notion 페이지 생성 실패: ${e.message}`);
+    } finally {
+      setNotionPageGenerating(false);
+    }
+  };
+
   // PDF Bulk Export to Google Drive Function
   const handleBulkExportPdf = async () => {
     if (!currentSessionId) return;
@@ -575,10 +625,131 @@ export default function Home() {
             학생 크리틱 대시보드
           </Link>
         </div>
-        <div style={{ display: "flex", gap: "10px" }}>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <button onClick={toggleTheme} className="theme-switch-btn" aria-label="Toggle theme">
             {darkMode ? <Sun style={{ width: "18px", height: "18px" }} /> : <Moon style={{ width: "18px", height: "18px" }} />}
           </button>
+
+          {/* ⚙️ 설정 드롭다운 */}
+          <div ref={settingsRef} style={{ position: "relative" }}>
+            <button
+              id="settings-btn"
+              onClick={() => setShowSettingsDropdown((prev) => !prev)}
+              className="theme-switch-btn"
+              aria-label="설정 메뉴"
+              style={{ color: showSettingsDropdown ? "var(--primary)" : undefined }}
+            >
+              <Settings style={{ width: "18px", height: "18px" }} />
+            </button>
+
+            {showSettingsDropdown && (
+              <div
+                className="glass-card animated-slide-up"
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 8px)",
+                  right: 0,
+                  zIndex: 999,
+                  minWidth: "220px",
+                  padding: "6px",
+                  border: "1px solid var(--border-subtle)",
+                  boxShadow: "var(--shadow-lg)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "2px",
+                }}
+              >
+                {/* 새 수업 세션 추가 */}
+                <button
+                  id="settings-add-session"
+                  onClick={() => { setShowSettingsDropdown(false); openSessionModal(); }}
+                  className="btn"
+                  style={{
+                    justifyContent: "flex-start",
+                    gap: "10px",
+                    padding: "9px 12px",
+                    fontSize: "13px",
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--text-main)",
+                    borderRadius: "8px",
+                    fontWeight: 500,
+                    textAlign: "left",
+                    cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--primary-light)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  <CalendarPlus style={{ width: "15px", height: "15px", color: "var(--secondary)", flexShrink: 0 }} />
+                  새 수업 세션 추가
+                </button>
+
+                {/* 구분선 */}
+                <div style={{ height: "1px", background: "var(--border-subtle)", margin: "2px 4px" }} />
+
+                {/* Notion 수업 페이지 생성 */}
+                <button
+                  id="settings-notion-page"
+                  onClick={handleGenerateNotionPage}
+                  disabled={notionPageGenerating || !currentSessionId}
+                  className="btn"
+                  style={{
+                    justifyContent: "flex-start",
+                    gap: "10px",
+                    padding: "9px 12px",
+                    fontSize: "13px",
+                    background: "transparent",
+                    border: "none",
+                    color: notionPageGenerating ? "var(--text-light)" : "var(--text-main)",
+                    borderRadius: "8px",
+                    fontWeight: 500,
+                    textAlign: "left",
+                    cursor: notionPageGenerating ? "default" : "pointer",
+                    opacity: !currentSessionId ? 0.5 : 1,
+                  }}
+                  onMouseEnter={(e) => { if (!notionPageGenerating) e.currentTarget.style.background = "var(--primary-light)"; }}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  {notionPageGenerating ? (
+                    <Loader2 style={{ width: "15px", height: "15px", color: "var(--primary)", flexShrink: 0 }} className="animated-spin" />
+                  ) : (
+                    <FileText style={{ width: "15px", height: "15px", color: "var(--primary)", flexShrink: 0 }} />
+                  )}
+                  {notionPageGenerating ? "Notion 페이지 생성 중..." : "Notion 수업 페이지 생성"}
+                </button>
+
+                {/* 구분선 */}
+                <div style={{ height: "1px", background: "var(--border-subtle)", margin: "2px 4px" }} />
+
+                {/* PDF 일괄 생성 */}
+                <button
+                  id="settings-pdf-export"
+                  onClick={() => { setShowSettingsDropdown(false); handleBulkExportPdf(); }}
+                  disabled={exportingPdf}
+                  className="btn"
+                  style={{
+                    justifyContent: "flex-start",
+                    gap: "10px",
+                    padding: "9px 12px",
+                    fontSize: "13px",
+                    background: "transparent",
+                    border: "none",
+                    color: exportingPdf ? "var(--text-light)" : "var(--text-main)",
+                    borderRadius: "8px",
+                    fontWeight: 500,
+                    textAlign: "left",
+                    cursor: exportingPdf ? "default" : "pointer",
+                  }}
+                  onMouseEnter={(e) => { if (!exportingPdf) e.currentTarget.style.background = "var(--primary-light)"; }}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  <Download style={{ width: "15px", height: "15px", color: "var(--text-muted)", flexShrink: 0 }} />
+                  오늘 수업 PDF 일괄 생성
+                </button>
+              </div>
+            )}
+          </div>
+
           <button onClick={() => signOut()} className="theme-switch-btn" style={{ color: "var(--danger)" }} aria-label="Logout">
             <LogOut style={{ width: "18px", height: "18px" }} />
           </button>
@@ -605,13 +776,7 @@ export default function Home() {
       <div className="glass-card" style={{ marginBottom: "12px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
           <h3 style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>수업 세션 설정</h3>
-          <button 
-            onClick={openSessionModal}
-            className="btn btn-secondary" 
-            style={{ padding: "4px 10px", fontSize: "11px", display: "flex", alignItems: "center", gap: "4px" }}
-          >
-            <Plus style={{ width: "12px", height: "12px" }} /> 새 세션 추가
-          </button>
+          <span style={{ fontSize: "11px", color: "var(--text-light)" }}>⚙️ 설정에서 세션 추가</span>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
           <div>
@@ -693,16 +858,10 @@ export default function Home() {
           </span>
         </div>
 
-        {/* Dynamic PDF Export Button */}
-        <div style={{ marginBottom: "16px" }}>
-          <button 
-            onClick={handleBulkExportPdf} 
-            className="btn btn-secondary" 
-            style={{ width: "100%", gap: "8px", background: "rgba(59, 130, 246, 0.06)", borderColor: "rgba(59, 130, 246, 0.2)", color: "var(--primary)" }}
-          >
-            <Download style={{ width: "16px", height: "16px" }} />
-            오늘 수업 일지 전체 구글 드라이브로 저장 (PDF 일괄 생성)
-          </button>
+        {/* PDF & Notion hint — moved to ⚙️ settings dropdown */}
+        <div style={{ marginBottom: "8px", fontSize: "11px", color: "var(--text-light)", display: "flex", alignItems: "center", gap: "5px" }}>
+          <Settings style={{ width: "11px", height: "11px" }} />
+          PDF 일괄 생성·Notion 수업 페이지 생성은 우상단 ⚙️ 설정에서 할 수 있습니다.
         </div>
 
         {/* Students list loading spinner */}

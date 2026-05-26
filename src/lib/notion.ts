@@ -692,4 +692,187 @@ export async function createSession(sessionName: string, date: string, descripti
 }
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Notion 수업 페이지 자동 생성
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Fixed student order for page generation (1분반 → 2분반 고정 순서)
+export const CLASS_1_ORDER = ["강민우","김민우","박승민","이찬","정영기","조은준","최태빈","권은재","김민채","유동성","주아름","이용욱","송창서","조혜정","김성용"];
+export const CLASS_2_ORDER = ["강진욱","박주원","안태환","이지우","추민혁","신현빈","윤혜빈","배수연","김재민","김영우","박소희","김정진","백주은","정수린","연태률"];
+
+// Normalize image URL to lh3.googleusercontent.com format for Notion compatibility
+function normalizeImageUrl(url: string): string {
+  if (!url) return "";
+  // Already lh3 format
+  if (url.startsWith("https://lh3.googleusercontent.com")) return url;
+  // GCS public URL format: extract file ID if it's a Notion-served image
+  return url;
+}
+
+// Build rich_text array for Notion from a plain string (handles length limit)
+function buildRichText(text: string) {
+  if (!text) return [{ type: "text" as const, text: { content: "" } }];
+  // Notion rich_text content is limited to 2000 chars per item
+  const chunks: any[] = [];
+  for (let i = 0; i < text.length; i += 2000) {
+    chunks.push({ type: "text", text: { content: text.slice(i, i + 2000) } });
+  }
+  return chunks;
+}
+
+export interface NotionPageInput {
+  sessionPageId: string;
+  sessionName: string;
+  description: string;
+  overall: string;
+  students: Student[];
+  evaluations: Record<string, Evaluation>; // studentId → Evaluation
+}
+
+export async function generateNotionPage(input: NotionPageInput): Promise<{ success: boolean; url?: string; error?: string }> {
+  if (!notion) {
+    return { success: false, error: "Notion 클라이언트가 설정되지 않았습니다." };
+  }
+
+  const { sessionPageId, sessionName, description, overall, students, evaluations } = input;
+
+  try {
+    // ── Step 1: 기존 블록 모두 삭제 ──────────────────────────────────────────
+    const existingBlocks = await notion.blocks.children.list({ block_id: sessionPageId, page_size: 100 });
+    for (const block of existingBlocks.results) {
+      await notion.blocks.delete({ block_id: (block as any).id });
+    }
+
+    // ── Step 2: 학생 순서 정렬 ───────────────────────────────────────────────
+    const cls1Students = CLASS_1_ORDER
+      .map(name => students.find(s => s.name === name && s.cls === "1분반"))
+      .filter(Boolean) as Student[];
+    const cls2Students = CLASS_2_ORDER
+      .map(name => students.find(s => s.name === name && s.cls === "2분반"))
+      .filter(Boolean) as Student[];
+
+    // 고정 순서에 없는 학생들 뒤에 추가
+    const cls1Extra = students.filter(s => s.cls === "1분반" && !CLASS_1_ORDER.includes(s.name));
+    const cls2Extra = students.filter(s => s.cls === "2분반" && !CLASS_2_ORDER.includes(s.name));
+    const ordered1 = [...cls1Students, ...cls1Extra];
+    const ordered2 = [...cls2Students, ...cls2Extra];
+
+    // ── Step 3: 학생별 토글 블록 빌드 ───────────────────────────────────────
+    const buildStudentToggle = (st: Student): any => {
+      const ev = evaluations[st.id];
+      const scoreText = ev ? `${st.name}  ${ev.score}` : `${st.name}  (미평가)`;
+      const criticText = ev?.critic || "(크리틱 없음)";
+      const imageUrl = ev?.imageUrl ? normalizeImageUrl(ev.imageUrl) : "";
+
+      const innerChildren: any[] = [];
+
+      // 이미지 블록 (URL이 있을 때만)
+      if (imageUrl) {
+        innerChildren.push({
+          object: "block",
+          type: "image",
+          image: {
+            type: "external",
+            external: { url: imageUrl },
+          },
+        });
+      }
+
+      // 크리틱 텍스트
+      innerChildren.push({
+        object: "block",
+        type: "paragraph",
+        paragraph: {
+          rich_text: buildRichText(criticText),
+        },
+      });
+
+      return {
+        object: "block",
+        type: "toggle",
+        toggle: {
+          rich_text: [{ type: "text", text: { content: scoreText } }],
+          children: innerChildren,
+        },
+      };
+    };
+
+    // ── Step 4: 전체 블록 구조 조립 ─────────────────────────────────────────
+    const blocks: any[] = [
+      // [과제] 토글
+      {
+        object: "block",
+        type: "toggle",
+        toggle: {
+          rich_text: [{ type: "text", text: { content: `과제 : ${sessionName}` } }],
+          children: [
+            {
+              object: "block",
+              type: "paragraph",
+              paragraph: { rich_text: buildRichText(description || "(과제 설명 없음)") },
+            },
+          ],
+        },
+      },
+      // [총평] 토글
+      {
+        object: "block",
+        type: "toggle",
+        toggle: {
+          rich_text: [{ type: "text", text: { content: "총평" } }],
+          children: [
+            {
+              object: "block",
+              type: "paragraph",
+              paragraph: { rich_text: buildRichText(overall || "(총평 없음)") },
+            },
+          ],
+        },
+      },
+      // [개인별 크리틱 및 평가] 토글
+      {
+        object: "block",
+        type: "toggle",
+        toggle: {
+          rich_text: [{ type: "text", text: { content: "개인별 크리틱 및 평가" } }],
+          children: [
+            // 1분반 토글
+            {
+              object: "block",
+              type: "toggle",
+              toggle: {
+                rich_text: [{ type: "text", text: { content: "1분반" } }],
+                children: ordered1.map(buildStudentToggle),
+              },
+            },
+            // 2분반 토글
+            {
+              object: "block",
+              type: "toggle",
+              toggle: {
+                rich_text: [{ type: "text", text: { content: "2분반" } }],
+                children: ordered2.map(buildStudentToggle),
+              },
+            },
+          ],
+        },
+      },
+    ];
+
+    // ── Step 5: Notion API에 블록 추가 ──────────────────────────────────────
+    await notion.blocks.children.append({
+      block_id: sessionPageId,
+      children: blocks,
+    });
+
+    // Retrieve page URL
+    const page: any = await notion.pages.retrieve({ page_id: sessionPageId });
+    const url = page.url || `https://notion.so/${sessionPageId.replace(/-/g, "")}`;
+
+    return { success: true, url };
+  } catch (error: any) {
+    console.error("Error generating Notion page:", error);
+    return { success: false, error: error.message || "Notion 페이지 생성 실패" };
+  }
+}
 
