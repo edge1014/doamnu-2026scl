@@ -52,9 +52,12 @@ interface Evaluation {
 
 // Converts any Drive share/view URL to a thumbnail URL that embeds reliably in <img>
 function normalizeDriveUrl(url: string): string {
-  if (!url || !url.includes("drive.google.com")) return url;
-  const m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/) ?? url.match(/\/d\/([a-zA-Z0-9_-]+)/);
-  if (m) return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w800-h500`;
+  if (!url) return url;
+  if (url.includes("lh3.googleusercontent.com")) return url;
+  if (url.includes("drive.google.com")) {
+    const m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/) ?? url.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    if (m) return `https://lh3.googleusercontent.com/d/${m[1]}`;
+  }
   return url;
 }
 

@@ -114,7 +114,7 @@ async function uploadImageToDrive(accessToken: string, folderId: string, filenam
 
   return {
     fileId: uploadData.id,
-    imageUrl: `https://drive.google.com/thumbnail?id=${uploadData.id}&sz=w800-h500`,
+    imageUrl: `https://lh3.googleusercontent.com/d/${uploadData.id}`,
     webViewLink: uploadData.webViewLink,
   };
 }
