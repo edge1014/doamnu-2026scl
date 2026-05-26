@@ -98,6 +98,10 @@ export async function POST(req: NextRequest) {
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
           "--disable-gpu",
+          "--disable-crash-reporter",
+          "--disable-crashpad",
+          "--disable-breakpad",
+          "--no-zygote",
         ],
       });
 

@@ -836,24 +836,22 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
         toggle: {
           rich_text: [{ type: "text", text: { content: "개인별 크리틱 및 평가" } }],
           children: [
-            // 1분반 토글
             {
               object: "block",
-              type: "toggle",
-              toggle: {
+              type: "heading_3",
+              heading_3: {
                 rich_text: [{ type: "text", text: { content: "1분반" } }],
-                children: ordered1.map(buildStudentToggle),
               },
             },
-            // 2분반 토글
+            ...ordered1.map(buildStudentToggle),
             {
               object: "block",
-              type: "toggle",
-              toggle: {
+              type: "heading_3",
+              heading_3: {
                 rich_text: [{ type: "text", text: { content: "2분반" } }],
-                children: ordered2.map(buildStudentToggle),
               },
             },
+            ...ordered2.map(buildStudentToggle),
           ],
         },
       },
