@@ -532,6 +532,8 @@ export default function Home() {
 
       const folderId = folderData.folderId;
 
+      const failedExports: string[] = [];
+
       // 2. Export each student one by one
       for (let i = 0; i < evaluatedList.length; i++) {
         const student = evaluatedList[i];
@@ -550,10 +552,16 @@ export default function Home() {
 
         const exportData = await exportRes.json();
         if (!exportRes.ok || exportData.error) {
-          console.error(`Failed to export ${student.name}:`, exportData.error);
+          const reason = exportData.error || `HTTP ${exportRes.status}`;
+          failedExports.push(`${student.name}: ${reason}`);
+          console.error(`Failed to export ${student.name}:`, reason);
         }
         
         setExportProgress(i + 1);
+      }
+
+      if (failedExports.length > 0) {
+        throw new Error(`${failedExports.length}명 PDF 생성 실패 — ${failedExports.slice(0, 3).join(" / ")}`);
       }
 
       showToast("구글 드라이브에 PDF 전체 업로드 완료!");

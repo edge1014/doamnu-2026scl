@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { useSession } from "next-auth/react";
+import { useSession, signOut } from "next-auth/react";
 import Link from "next/link";
 import { Chart, registerables } from "chart.js";
 import { 
@@ -17,7 +17,9 @@ import {
   ChevronUp,
   AlertCircle,
   Download,
-  Award
+  Award,
+  Settings,
+  LogOut
 } from "lucide-react";
 
 // Register Chart.js elements
@@ -86,6 +88,7 @@ function StudentBoardContent() {
   const [loading, setLoading] = useState(true);
   const [adviceLoading, setAdviceLoading] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
   const [historyDropdownOpen, setHistoryDropdownOpen] = useState(false);
   const [histOpen, setHistOpen] = useState(pdfMode); // Expand history automatically in PDF mode
   
@@ -107,6 +110,7 @@ function StudentBoardContent() {
   // References
   const chartRef = useRef<HTMLCanvasElement>(null);
   const chartInstanceRef = useRef<Chart | null>(null);
+  const settingsRef = useRef<HTMLDivElement>(null);
 
   // Show toast notification
   const showToast = (msg: string) => {
@@ -121,6 +125,16 @@ function StudentBoardContent() {
     const isDark = localStorage.getItem("theme") === "dark";
     setDarkMode(isDark);
     if (isDark) document.body.classList.add("dark");
+  }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setShowSettingsDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
   const toggleTheme = () => {
@@ -386,6 +400,8 @@ function StudentBoardContent() {
       }
       const folderId = folderData.folderId;
 
+      const failedExports: string[] = [];
+
       // 2. Export each student one by one
       for (let i = 0; i < listToExport.length; i++) {
         const currentStudent = listToExport[i];
@@ -405,8 +421,14 @@ function StudentBoardContent() {
         });
         const pdfData = await pdfRes.json();
         if (!pdfRes.ok || !pdfData.success) {
-          throw new Error(pdfData.error || "PDF 생성 실패");
+          const reason = pdfData.error || `HTTP ${pdfRes.status}`;
+          failedExports.push(`${currentStudent.name}: ${reason}`);
+          console.error(`Failed to export ${currentStudent.name}:`, reason);
         }
+      }
+
+      if (failedExports.length > 0) {
+        throw new Error(`${failedExports.length}명 PDF 생성 실패 — ${failedExports.slice(0, 3).join(" / ")}`);
       }
 
       showToast("구글 드라이브 PDF 일괄 업로드 완료!");
@@ -635,9 +657,137 @@ function StudentBoardContent() {
           <span style={{ color: "var(--border-subtle)" }}>|</span>
           <span style={{ fontSize: "14px", fontWeight: 700, color: "var(--primary)" }}>학생 크리틱 대시보드</span>
         </div>
-        <button onClick={toggleTheme} className="theme-switch-btn" aria-label="Toggle theme">
-          {darkMode ? <Sun style={{ width: "18px", height: "18px" }} /> : <Moon style={{ width: "18px", height: "18px" }} />}
-        </button>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <button onClick={toggleTheme} className="theme-switch-btn" aria-label="Toggle theme">
+            {darkMode ? <Sun style={{ width: "18px", height: "18px" }} /> : <Moon style={{ width: "18px", height: "18px" }} />}
+          </button>
+
+          <div ref={settingsRef} style={{ position: "relative" }}>
+            <button
+              id="board-settings-btn"
+              onClick={() => setShowSettingsDropdown((prev) => !prev)}
+              className="theme-switch-btn"
+              aria-label="설정 메뉴"
+              style={{ color: showSettingsDropdown ? "var(--primary)" : undefined }}
+            >
+              <Settings style={{ width: "18px", height: "18px" }} />
+            </button>
+
+            {showSettingsDropdown && (
+              <div
+                className="glass-card animated-slide-up"
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 8px)",
+                  right: 0,
+                  zIndex: 999,
+                  minWidth: "220px",
+                  padding: "6px",
+                  border: "1px solid var(--border-subtle)",
+                  boxShadow: "var(--shadow-lg)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "2px",
+                }}
+              >
+                <button
+                  onClick={() => { setShowSettingsDropdown(false); exportSinglePdf(); }}
+                  disabled={!sessionData || !isRegistered || exportStatus.loading || allRecords.length === 0}
+                  className="btn"
+                  style={{
+                    justifyContent: "flex-start",
+                    gap: "10px",
+                    padding: "9px 12px",
+                    fontSize: "13px",
+                    background: "transparent",
+                    border: "none",
+                    color: exportStatus.loading ? "var(--text-light)" : "var(--text-main)",
+                    borderRadius: "8px",
+                    fontWeight: 500,
+                    textAlign: "left",
+                    cursor: exportStatus.loading ? "default" : "pointer",
+                    opacity: !sessionData || !isRegistered || allRecords.length === 0 ? 0.5 : 1,
+                  }}
+                  onMouseEnter={(e) => { if (!exportStatus.loading) e.currentTarget.style.background = "var(--primary-light)"; }}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  {exportStatus.loading ? (
+                    <Loader2 className="animated-spin" style={{ width: "15px", height: "15px", color: "var(--primary)", flexShrink: 0 }} />
+                  ) : (
+                    <Download style={{ width: "15px", height: "15px", color: "var(--text-muted)", flexShrink: 0 }} />
+                  )}
+                  현재 학생 PDF 생성
+                </button>
+
+                <div style={{ height: "1px", background: "var(--border-subtle)", margin: "2px 4px" }} />
+
+                <button
+                  onClick={() => { setShowSettingsDropdown(false); bulkGenerateAdvice(); }}
+                  disabled={!sessionData || !isRegistered || bulkAdviceStatus.loading || bulkPdfStatus.loading}
+                  className="btn"
+                  style={{
+                    justifyContent: "flex-start",
+                    gap: "10px",
+                    padding: "9px 12px",
+                    fontSize: "13px",
+                    background: "transparent",
+                    border: "none",
+                    color: bulkAdviceStatus.loading ? "var(--text-light)" : "var(--text-main)",
+                    borderRadius: "8px",
+                    fontWeight: 500,
+                    textAlign: "left",
+                    cursor: bulkAdviceStatus.loading ? "default" : "pointer",
+                    opacity: !sessionData || !isRegistered ? 0.5 : 1,
+                  }}
+                  onMouseEnter={(e) => { if (!bulkAdviceStatus.loading) e.currentTarget.style.background = "var(--primary-light)"; }}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  {bulkAdviceStatus.loading ? (
+                    <Loader2 className="animated-spin" style={{ width: "15px", height: "15px", color: "var(--primary)", flexShrink: 0 }} />
+                  ) : (
+                    <Sparkles style={{ width: "15px", height: "15px", color: "var(--primary)", flexShrink: 0 }} />
+                  )}
+                  분반 AI 조언 일괄 생성
+                </button>
+
+                <div style={{ height: "1px", background: "var(--border-subtle)", margin: "2px 4px" }} />
+
+                <button
+                  onClick={() => { setShowSettingsDropdown(false); bulkExportPdf(); }}
+                  disabled={!sessionData || !isRegistered || bulkAdviceStatus.loading || bulkPdfStatus.loading}
+                  className="btn"
+                  style={{
+                    justifyContent: "flex-start",
+                    gap: "10px",
+                    padding: "9px 12px",
+                    fontSize: "13px",
+                    background: "transparent",
+                    border: "none",
+                    color: bulkPdfStatus.loading ? "var(--text-light)" : "var(--text-main)",
+                    borderRadius: "8px",
+                    fontWeight: 500,
+                    textAlign: "left",
+                    cursor: bulkPdfStatus.loading ? "default" : "pointer",
+                    opacity: !sessionData || !isRegistered ? 0.5 : 1,
+                  }}
+                  onMouseEnter={(e) => { if (!bulkPdfStatus.loading) e.currentTarget.style.background = "var(--primary-light)"; }}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  {bulkPdfStatus.loading ? (
+                    <Loader2 className="animated-spin" style={{ width: "15px", height: "15px", color: "var(--primary)", flexShrink: 0 }} />
+                  ) : (
+                    <Download style={{ width: "15px", height: "15px", color: "var(--secondary)", flexShrink: 0 }} />
+                  )}
+                  분반 PDF 일괄 생성
+                </button>
+              </div>
+            )}
+          </div>
+
+          <button onClick={() => signOut()} className="theme-switch-btn" style={{ color: "var(--danger)" }} aria-label="Logout">
+            <LogOut style={{ width: "18px", height: "18px" }} />
+          </button>
+        </div>
       </div>
 
       {/* 2. Custom Division & Student Selector Panel (hidden in PDF print) */}
