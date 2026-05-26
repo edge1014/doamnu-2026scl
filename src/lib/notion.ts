@@ -492,7 +492,7 @@ export async function saveStudentAdvice(params: {
     } else {
       // Create new page
       await notion.pages.create({
-        parent: { database_id: dbAdvice },
+        parent: { data_source_id: dbAdvice },
         properties,
       });
     }
@@ -583,7 +583,7 @@ export async function registerProfessor(name: string, email: string, classes: ("
 
   try {
     const response = await notion.pages.create({
-      parent: { database_id: dbProfessors },
+      parent: { data_source_id: dbProfessors },
       properties: {
         "이름": {
           title: [{ text: { content: name } }],
@@ -664,7 +664,7 @@ export async function createSession(sessionName: string, date: string, descripti
 
   try {
     const response = await notion.pages.create({
-      parent: { database_id: dbSessions },
+      parent: { data_source_id: dbSessions },
       properties: {
         "세션명": {
           title: [{ text: { content: sessionName } }],
@@ -875,4 +875,3 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
     return { success: false, error: error.message || "Notion 페이지 생성 실패" };
   }
 }
-
