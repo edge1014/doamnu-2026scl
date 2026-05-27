@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { registerProfessor, fetchProfessors } from "@/lib/notion";
+import { registerProfessor, fetchProfessors, findDefaultProfessor } from "@/lib/notion";
 
 export async function POST(req: NextRequest) {
   try {
@@ -8,6 +8,15 @@ export async function POST(req: NextRequest) {
 
     if (!name || !email || !classes || !passcode) {
       return NextResponse.json({ error: "필수 정보(이름, 이메일, 담당 분반, 패스코드)가 누락되었습니다." }, { status: 400 });
+    }
+
+    const defaultProfessor = findDefaultProfessor(email);
+    if (defaultProfessor) {
+      return NextResponse.json({
+        success: true,
+        professor: defaultProfessor,
+        message: `${defaultProfessor.name} 교수님은 기본 허용 계정으로 확인되었습니다.`
+      });
     }
 
     // 1. Verify Passcode

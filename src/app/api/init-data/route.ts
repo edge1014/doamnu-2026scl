@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { fetchStudents, fetchSessions, fetchProfessors } from "@/lib/notion";
+import { fetchStudents, fetchSessions, fetchProfessors, findDefaultProfessor } from "@/lib/notion";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 
@@ -15,8 +15,9 @@ export async function GET() {
     ]);
 
     // Find the logged-in professor details
-    const matchedProf = sessionEmail 
-      ? professors.find(p => p.email.toLowerCase() === sessionEmail.toLowerCase())
+    const normalizedEmail = sessionEmail?.trim().toLowerCase() || "";
+    const matchedProf = normalizedEmail 
+      ? findDefaultProfessor(normalizedEmail) || professors.find(p => p.email.trim().toLowerCase() === normalizedEmail)
       : null;
 
     return NextResponse.json({

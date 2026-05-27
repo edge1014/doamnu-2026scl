@@ -519,6 +519,12 @@ const DEFAULT_PROFESSORS: Professor[] = [
   { email: "haha.shinhae@gmail.com", name: "하신해", classes: ["1분반", "2분반"] },
 ];
 
+export function findDefaultProfessor(email: string | undefined | null): Professor | null {
+  if (!email) return null;
+  const normalizedEmail = email.trim().toLowerCase();
+  return DEFAULT_PROFESSORS.find(p => p.email.toLowerCase() === normalizedEmail) || null;
+}
+
 // Fetch all registered professors from Notion DB5 or environment variables fallback
 export async function fetchProfessors(): Promise<Professor[]> {
   const dbProfessors = process.env.NOTION_DB_PROFESSORS;
