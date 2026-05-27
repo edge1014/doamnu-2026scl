@@ -513,24 +513,43 @@ export interface Professor {
   classes: ("1분반" | "2분반")[];
 }
 
+const DEFAULT_PROFESSORS: Professor[] = [
+  { email: "studiomob@gmail.com", name: "김태훈", classes: ["1분반", "2분반"] },
+  { email: "wjdaldus9234@gmail.com", name: "정미연", classes: ["1분반", "2분반"] },
+  { email: "haha.shinhae@gmail.com", name: "하신해", classes: ["1분반", "2분반"] },
+];
+
 // Fetch all registered professors from Notion DB5 or environment variables fallback
 export async function fetchProfessors(): Promise<Professor[]> {
   const dbProfessors = process.env.NOTION_DB_PROFESSORS;
   
   // 1. Fallback from environment variables if defined
   const envProfessorsStr = process.env.ALLOWED_PROFESSORS;
-  let fallbackProfessors: Professor[] = [];
+  let fallbackProfessors: Professor[] = [...DEFAULT_PROFESSORS];
   if (envProfessorsStr) {
     try {
-      fallbackProfessors = JSON.parse(envProfessorsStr);
+      const envProfessors = JSON.parse(envProfessorsStr);
+      envProfessors.forEach((prof: Professor) => {
+        const existing = fallbackProfessors.find(p => p.email.toLowerCase() === prof.email.toLowerCase());
+        if (existing) {
+          existing.name = prof.name || existing.name;
+          existing.classes = Array.from(new Set([...existing.classes, ...(prof.classes || [])])) as ("1분반" | "2분반")[];
+        } else {
+          fallbackProfessors.push(prof);
+        }
+      });
     } catch (e) {
       // If not JSON format, treat as simple comma-separated emails and assign both classes
       const emails = envProfessorsStr.split(",").map(e => e.trim());
-      fallbackProfessors = emails.map(email => ({
+      emails.map((email): Professor => ({
         name: email.split("@")[0],
         email,
         classes: ["1분반", "2분반"]
-      }));
+      })).forEach((prof) => {
+        if (!fallbackProfessors.some(p => p.email.toLowerCase() === prof.email.toLowerCase())) {
+          fallbackProfessors.push(prof);
+        }
+      });
     }
   }
 

@@ -3,6 +3,9 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import puppeteer from "puppeteer";
 import { verifyProfessorPermission } from "@/lib/notion";
+import { mkdtemp, mkdir, rm } from "fs/promises";
+import { join } from "path";
+import { tmpdir } from "os";
 
 export async function POST(req: NextRequest) {
   try {
@@ -89,46 +92,65 @@ export async function POST(req: NextRequest) {
 
       console.log(`Rendering PDF for ${studentName} at: ${targetUrl}`);
 
-      // Launch Puppeteer browser
-      const browser = await puppeteer.launch({
-        headless: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-dev-shm-usage",
-          "--disable-gpu",
-          "--disable-crash-reporter",
-          "--disable-crashpad",
-          "--disable-breakpad",
-          "--no-zygote",
-        ],
-      });
+      const userDataDir = await mkdtemp(join(tmpdir(), "scl-chrome-profile-"));
+      const crashDumpsDir = join(tmpdir(), "scl-chrome-crashes");
+      await mkdir(crashDumpsDir, { recursive: true });
 
-      const page = await browser.newPage();
-      
-      // Set viewport to match standard A4 page width at 96 DPI (approx 800px)
-      await page.setViewport({ width: 800, height: 1130 });
+      let browser;
+      let pdfBuffer: Buffer;
+      try {
+        // Launch Puppeteer browser
+        browser = await puppeteer.launch({
+          headless: true,
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+          userDataDir,
+          env: {
+            ...process.env,
+            HOME: tmpdir(),
+            XDG_CONFIG_HOME: tmpdir(),
+            XDG_CACHE_HOME: tmpdir(),
+          },
+          args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-crash-reporter",
+            "--disable-crashpad",
+            "--disable-breakpad",
+            `--crash-dumps-dir=${crashDumpsDir}`,
+            "--no-zygote",
+          ],
+        });
 
-      // Navigate and wait
-      await page.goto(targetUrl, {
-        waitUntil: "networkidle0",
-        timeout: 30000,
-      });
+        const page = await browser.newPage();
+        
+        // Set viewport to match standard A4 page width at 96 DPI (approx 800px)
+        await page.setViewport({ width: 800, height: 1130 });
 
-      // Render page to PDF
-      const pdfBuffer = await page.pdf({
-        format: "A4",
-        printBackground: true,
-        margin: {
-          top: "20mm",
-          right: "15mm",
-          bottom: "20mm",
-          left: "15mm",
-        },
-      });
+        // Navigate and wait
+        await page.goto(targetUrl, {
+          waitUntil: "networkidle0",
+          timeout: 30000,
+        });
 
-      await browser.close();
+        // Render page to PDF
+        pdfBuffer = Buffer.from(await page.pdf({
+          format: "A4",
+          printBackground: true,
+          margin: {
+            top: "20mm",
+            right: "15mm",
+            bottom: "20mm",
+            left: "15mm",
+          },
+        }));
+      } finally {
+        if (browser) {
+          await browser.close().catch(() => undefined);
+        }
+        await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
+      }
 
       // Upload PDF to Google Drive folder using Multipart related upload
       const metadata = {
