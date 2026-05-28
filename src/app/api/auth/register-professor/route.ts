@@ -6,8 +6,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { name, email, classes, passcode } = body;
 
-    if (!name || !email || !classes || !passcode) {
-      return NextResponse.json({ error: "필수 정보(이름, 이메일, 담당 분반, 패스코드)가 누락되었습니다." }, { status: 400 });
+    if (!name || !email || !classes) {
+      return NextResponse.json({ error: "필수 정보(이름, 이메일, 담당 분반)가 누락되었습니다." }, { status: 400 });
     }
 
     const defaultProfessor = findDefaultProfessor(email);
@@ -21,6 +21,9 @@ export async function POST(req: NextRequest) {
 
     // 1. Verify Passcode
     const expectedPasscode = process.env.PROFESSOR_SIGNUP_CODE || "arch2026";
+    if (!passcode) {
+      return NextResponse.json({ error: "가입 승인 패스코드를 입력해 주세요." }, { status: 400 });
+    }
     if (passcode !== expectedPasscode) {
       return NextResponse.json({ error: "올바르지 않은 가입 승인 패스코드입니다." }, { status: 403 });
     }
