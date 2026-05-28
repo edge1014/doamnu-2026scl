@@ -516,7 +516,7 @@ export interface Professor {
 const DEFAULT_PROFESSORS: Professor[] = [
   { email: "studiomob@gmail.com", name: "김태훈", classes: ["1분반", "2분반"] },
   { email: "wjdaldus9234@gmail.com", name: "정미연", classes: ["1분반", "2분반"] },
-  { email: "haha.shinhae@gmail.com", name: "하신해", classes: ["1분반", "2분반"] },
+  { email: "haha.sinhae@gmail.com", name: "하신해", classes: ["1분반", "2분반"] },
 ];
 
 export function findDefaultProfessor(email: string | undefined | null): Professor | null {
