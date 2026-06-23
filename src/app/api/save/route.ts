@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { saveEvaluation, verifyProfessorPermission } from "@/lib/notion";
-import { GoogleGenAI } from "@google/genai";
-import { saveStudentAdvice } from "@/lib/notion";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
-
-const geminiApiKey = process.env.GEMINI_API_KEY;
 
 export async function POST(req: NextRequest) {
   try {
@@ -39,7 +35,7 @@ export async function POST(req: NextRequest) {
       imageUrl,
     });
 
-    // Gemini AI advice generation has been removed from save endpoint for token-saving.
+    // AI advice generation has been removed from save endpoint for token-saving.
     // It will be triggered manually in bulk/individually from the dashboard.
 
     return NextResponse.json({

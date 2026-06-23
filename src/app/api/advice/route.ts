@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchStudentAdvice, saveStudentAdvice, fetchStudentEvaluations, verifyProfessorPermission } from "@/lib/notion";
-import { GoogleGenAI } from "@google/genai";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 
-const geminiApiKey = process.env.GEMINI_API_KEY;
+const openRouterApiKey = process.env.OPENROUTER_API_KEY;
 
 export async function GET(req: NextRequest) {
   try {
@@ -16,7 +15,7 @@ export async function GET(req: NextRequest) {
     }
 
     const adviceRecord = await fetchStudentAdvice(studentId);
-    
+
     return NextResponse.json({
       advice: adviceRecord ? adviceRecord.advice : null,
       date: adviceRecord ? adviceRecord.date : null,
@@ -29,8 +28,8 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    if (!geminiApiKey) {
-      return NextResponse.json({ error: "GEMINI_API_KEY 설정이 누락되었습니다." }, { status: 500 });
+    if (!openRouterApiKey) {
+      return NextResponse.json({ error: "OPENROUTER_API_KEY 설정이 누락되었습니다." }, { status: 500 });
     }
 
     const session: any = await getServerSession(authOptions);
@@ -49,7 +48,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: perm.error }, { status: 403 });
     }
 
-    const ai = new GoogleGenAI({ apiKey: geminiApiKey });
     const dateStr = new Date().toISOString().split("T")[0];
 
     // 1. Fetch historical evaluations for context
@@ -95,12 +93,27 @@ ${historySummary}
 ${studentName}아, (마무리 격려 메시지를 젠지 말투로 써줘. 예: 아름아, 지난번에 동선 복잡했던 건 완벽히 해결했는데 이번엔 디테일이 조금 아쉽네! 뼈대만 잘 잡아도 공간이 럭셔리해져! 시그니처 공간 하나 제대로 찢어보자! ✨)
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [
+          { role: "user", content: prompt },
+        ],
+      }),
     });
 
-    const adviceText = (response.text || "").trim();
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OpenRouter API 호출 실패: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json();
+    const adviceText = (data?.choices?.[0]?.message?.content || "").trim();
 
     if (!adviceText) {
       throw new Error("AI 조언 생성 결과가 비어있습니다.");
