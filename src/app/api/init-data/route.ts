@@ -26,7 +26,10 @@ export async function GET(req: NextRequest) {
       students,
       sessions,
       semester,
-      professors: professors.map(p => p.name), // Dynamic professor lists for UI select element
+      // 동일 교수가 Notion과 기본 목록에 함께 있어도 입력폼에는 한 번만 표시한다.
+      professors: Array.from(new Set(
+        professors.map(p => p.name.trim()).filter(Boolean)
+      )),
       authInfo: {
         isRegistered: !!matchedProf,
         name: matchedProf ? matchedProf.name : session?.user?.name || "",

@@ -181,8 +181,8 @@ export default function Home() {
           }
           let resolvedProfessors = ["김태훈", "정미연", "하신해"];
           if (data.professors && data.professors.length > 0) {
-            resolvedProfessors = data.professors;
-            setDynamicProfessors(data.professors);
+            resolvedProfessors = Array.from(new Set(data.professors));
+            setDynamicProfessors(resolvedProfessors);
           }
           if (data.authInfo) {
             setAuthInfo(data.authInfo);
@@ -924,7 +924,7 @@ export default function Home() {
             <Loader2 className="animated-spin" style={{ width: "24px", height: "24px", color: "var(--primary)", animation: "spin 1s linear infinite" }} />
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: "8px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "8px" }}>
             {filteredStudents.map((st) => {
               const ev = evalMap[st.id];
               const isSelected = selectedStudent?.id === st.id;
