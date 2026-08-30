@@ -195,6 +195,13 @@ export default function Home() {
                   setDynamicProfessors(resolvedProfessors);
                 }
                 setSelectedProfessor(profName);
+
+                // 2학기 수업 운영 기본값: 김태훈은 1분반,
+                // 정미연·하신해는 2분반을 먼저 연다. 탭으로 모든 분반 조회는 항상 가능하다.
+                if (selectedSemester === "2026-2") {
+                  if (profName === "김태훈") setCurrentFilter("1분반");
+                  if (profName === "정미연" || profName === "하신해") setCurrentFilter("2분반");
+                }
               }
             } else {
               setShowRegisterModal(true);
