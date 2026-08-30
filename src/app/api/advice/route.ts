@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchStudentAdvice, saveStudentAdvice, fetchStudentEvaluations, verifyProfessorPermission } from "@/lib/notion";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { isReadOnlySemester, normalizeSemester } from "@/lib/semester";
 
 const openRouterApiKey = process.env.OPENROUTER_API_KEY;
 
@@ -9,12 +10,13 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const studentId = searchParams.get("studentId");
+    const semester = normalizeSemester(searchParams.get("semester"));
 
     if (!studentId) {
       return NextResponse.json({ error: "학생 ID가 필요합니다." }, { status: 400 });
     }
 
-    const adviceRecord = await fetchStudentAdvice(studentId);
+    const adviceRecord = await fetchStudentAdvice(studentId, semester);
 
     return NextResponse.json({
       advice: adviceRecord ? adviceRecord.advice : null,
@@ -37,6 +39,11 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const { studentId, studentName, critic, score, sessionName } = body;
+    const semester = normalizeSemester(body.semester);
+
+    if (isReadOnlySemester(semester)) {
+      return NextResponse.json({ error: "1학기는 조회 전용입니다." }, { status: 403 });
+    }
 
     if (!studentId || !studentName || !critic || score === undefined || !sessionName) {
       return NextResponse.json({ error: "필수 요청 데이터가 누락되었습니다." }, { status: 400 });
@@ -51,10 +58,8 @@ export async function POST(req: NextRequest) {
     const dateStr = new Date().toISOString().split("T")[0];
 
     // 1. Fetch historical evaluations for context
-    const evaluations = await fetchStudentEvaluations(studentId);
-    const historyEvals = evaluations
-      .filter((e) => e.critic !== critic || e.score !== score)
-      .slice(-4); // Get up to 4 recent historical records
+    const evaluations = await fetchStudentEvaluations(studentId, semester);
+    const historyEvals = evaluations.slice(0, -1).slice(-4); // Current evaluation excluded; up to 4 previous records
 
     const historySummary = historyEvals.length > 0
       ? historyEvals.map((e) => `- [${e.date}] 점수: ${e.score}점, 크리틱: ${e.critic}`).join("\n")
@@ -65,8 +70,8 @@ export async function POST(req: NextRequest) {
 요즘 대학생들이 쓰는 트렌디한 말투(예: 폼 미쳤다, 찢었다, 가보자고, 에바임, ~자고, ~누, ~하네, 각종 이모지 다수 사용)를 맛깔나게 섞어 쓰면서도, 건축설계 개념이나 공간 질서에 대해 대단히 날카롭고 구체적이며 뼈 때리는 조언을 해주어야 해.
 
 [중요 분석 지침]
-1. 오늘(그날)의 크리틱 내용(비중 80%): 오늘 전달된 크리틱 내용("${critic}")과 점수(${score}점)를 핵심 대상으로 삼아 구체적이고 현실적인 공간설계 개선점을 피드백해줘.
-2. 이전 크리틱 이력 및 흐름(비중 20%): 아래 제공된 이전 3~4회 동안의 크리틱 기록을 바탕으로, 학생의 설계 성장의 흐름, 반복해서 지적받고 있는 문제점, 혹은 개선된 점을 파악하여 조언에 반영해줘.
+1. 오늘(그날)의 크리틱 내용(비중 60%): 오늘 전달된 크리틱 내용("${critic}")과 점수(${score}점)를 핵심 대상으로 삼아 구체적이고 현실적인 공간설계 개선점을 피드백해줘.
+2. 이전 크리틱 이력 및 흐름(비중 40%): 아래 제공된 이전 3~4회 동안의 크리틱 기록을 바탕으로, 학생의 설계 성장의 흐름, 반복해서 지적받고 있는 문제점, 혹은 개선된 점을 파악하여 조언에 반영해줘.
 
 학생 정보:
 - 이름: ${studentName}
@@ -121,6 +126,7 @@ ${studentName}아, (마무리 격려 메시지를 젠지 말투로 써줘. 예: 
 
     // Save to Notion DB4
     await saveStudentAdvice({
+      semester,
       studentId,
       studentName,
       date: dateStr,

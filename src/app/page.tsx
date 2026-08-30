@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
 import Link from "next/link";
+import { DEFAULT_SEMESTER, normalizeSemester, type SemesterKey } from "@/lib/semester";
 import { 
   LogOut, 
   BookOpen, 
@@ -58,6 +59,7 @@ export default function Home() {
   // App Data States
   const [students, setStudents] = useState<Student[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [selectedSemester, setSelectedSemester] = useState<SemesterKey>(DEFAULT_SEMESTER);
   const [evalMap, setEvalMap] = useState<Record<string, Evaluation>>({});
   const [loading, setLoading] = useState(true);
   const [evalsLoading, setEvalsLoading] = useState(false);
@@ -123,6 +125,7 @@ export default function Home() {
   const [exportCurrentName, setExportCurrentName] = useState("");
 
   const evalPanelRef = useRef<HTMLDivElement>(null);
+  const isReadOnly = selectedSemester === "2026-1";
 
   // Close settings dropdown on outside click
   useEffect(() => {
@@ -137,6 +140,7 @@ export default function Home() {
 
   // 1. Theme Configuration
   useEffect(() => {
+    setSelectedSemester(normalizeSemester(new URLSearchParams(window.location.search).get("semester")));
     const isDark = localStorage.getItem("theme") === "dark";
     setDarkMode(isDark);
     if (isDark) document.body.classList.add("dark");
@@ -156,7 +160,14 @@ export default function Home() {
   // 2. Fetch Initial Data (Students & Sessions)
   useEffect(() => {
     if (status === "authenticated") {
-      fetch("/api/init-data")
+      setLoading(true);
+      setStudents([]);
+      setSessions([]);
+      setEvalMap({});
+      setCurrentSessionId("");
+      setOverallText("");
+      setSelectedStudent(null);
+      fetch(`/api/init-data?semester=${selectedSemester}`)
         .then((res) => res.json())
         .then((data) => {
           if (data.students) setStudents(data.students);
@@ -200,13 +211,13 @@ export default function Home() {
     } else if (status === "unauthenticated") {
       setLoading(false);
     }
-  }, [status]);
+  }, [status, selectedSemester]);
 
   // 3. Fetch Evaluations when Session Changes
   useEffect(() => {
     if (currentSessionId) {
       setEvalsLoading(true);
-      fetch(`/api/evals?sessionId=${currentSessionId}`)
+      fetch(`/api/evals?sessionId=${currentSessionId}&semester=${selectedSemester}`)
         .then((res) => res.json())
         .then((data) => {
           setEvalMap(data);
@@ -223,7 +234,7 @@ export default function Home() {
           setEvalsLoading(false);
         });
     }
-  }, [currentSessionId, sessions]);
+  }, [currentSessionId, sessions, selectedSemester]);
 
   // Toast message helper
   const showToast = (msg: string) => {
@@ -281,6 +292,7 @@ export default function Home() {
   // Handle session creation submission
   const handleCreateSession = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isReadOnly) return;
     if (!newSessionName.trim() || !newSessionDate.trim()) {
       showToast("세션명과 날짜를 모두 입력해주세요.");
       return;
@@ -294,6 +306,7 @@ export default function Home() {
           sessionName: newSessionName.trim(),
           date: newSessionDate.trim(),
           description: newSessionDesc.trim(),
+          semester: selectedSemester,
         }),
       });
       const data = await res.json();
@@ -341,6 +354,7 @@ export default function Home() {
 
   // Image Upload handler
   const handleImageFile = async (file: File) => {
+    if (isReadOnly) return;
     if (!selectedStudent) {
       showToast("학생을 먼저 선택해 주세요.");
       return;
@@ -390,6 +404,7 @@ export default function Home() {
 
   // Save current student evaluation
   const handleSaveEval = async () => {
+    if (isReadOnly) return;
     if (!selectedStudent || !currentSessionId) return;
     const sessionObj = sessions.find((s) => s.id === currentSessionId);
     if (!sessionObj) return;
@@ -410,6 +425,7 @@ export default function Home() {
           score,
           critic,
           imageUrl: currentImageUrl,
+          semester: selectedSemester,
         }),
       });
 
@@ -434,6 +450,7 @@ export default function Home() {
 
   // Save overall session review
   const handleSaveOverall = async () => {
+    if (isReadOnly) return;
     if (!currentSessionId) return;
     const btn = document.getElementById("overall-btn") as HTMLButtonElement;
     if (btn) btn.disabled = true;
@@ -445,6 +462,7 @@ export default function Home() {
         body: JSON.stringify({
           sessionPageId: currentSessionId,
           overall: overallText,
+          semester: selectedSemester,
         }),
       });
 
@@ -468,6 +486,7 @@ export default function Home() {
 
   // Notion 수업 페이지 자동 생성
   const handleGenerateNotionPage = async () => {
+    if (isReadOnly) return;
     if (!currentSessionId) {
       showToast("먼저 수업 세션을 선택해 주세요.");
       return;
@@ -478,7 +497,7 @@ export default function Home() {
       const res = await fetch("/api/notion-page", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: currentSessionId }),
+        body: JSON.stringify({ sessionId: currentSessionId, semester: selectedSemester }),
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -523,6 +542,7 @@ export default function Home() {
         body: JSON.stringify({
           action: "create_folder",
           sessionName: sessionObj.sessionName,
+          semester: selectedSemester,
         }),
       });
       const folderData = await folderRes.json();
@@ -547,6 +567,7 @@ export default function Home() {
             studentId: student.id,
             studentName: student.name,
             folderId: folderId,
+            semester: selectedSemester,
           }),
         });
 
@@ -629,7 +650,7 @@ export default function Home() {
         <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
           <span style={{ fontSize: "14px", fontWeight: 700, color: "var(--text-muted)" }}>교수 평가 입력폼</span>
           <span style={{ color: "var(--border-subtle)" }}>|</span>
-          <Link href="/board" style={{ fontSize: "14px", color: "var(--primary)", textDecoration: "none", fontWeight: 600 }}>
+          <Link href={`/board?semester=${selectedSemester}`} style={{ fontSize: "14px", color: "var(--primary)", textDecoration: "none", fontWeight: 600 }}>
             학생 크리틱 대시보드
           </Link>
         </div>
@@ -671,6 +692,7 @@ export default function Home() {
                 <button
                   id="settings-add-session"
                   onClick={() => { setShowSettingsDropdown(false); openSessionModal(); }}
+                  disabled={isReadOnly}
                   className="btn"
                   style={{
                     justifyContent: "flex-start",
@@ -683,7 +705,8 @@ export default function Home() {
                     borderRadius: "8px",
                     fontWeight: 500,
                     textAlign: "left",
-                    cursor: "pointer",
+                    cursor: isReadOnly ? "default" : "pointer",
+                    opacity: isReadOnly ? 0.45 : 1,
                   }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = "var(--primary-light)")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -699,7 +722,7 @@ export default function Home() {
                 <button
                   id="settings-notion-page"
                   onClick={handleGenerateNotionPage}
-                  disabled={notionPageGenerating || !currentSessionId}
+                  disabled={isReadOnly || notionPageGenerating || !currentSessionId}
                   className="btn"
                   style={{
                     justifyContent: "flex-start",
@@ -713,7 +736,7 @@ export default function Home() {
                     fontWeight: 500,
                     textAlign: "left",
                     cursor: notionPageGenerating ? "default" : "pointer",
-                    opacity: !currentSessionId ? 0.5 : 1,
+                    opacity: isReadOnly || !currentSessionId ? 0.5 : 1,
                   }}
                   onMouseEnter={(e) => { if (!notionPageGenerating) e.currentTarget.style.background = "var(--primary-light)"; }}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -773,9 +796,31 @@ export default function Home() {
               접속 교수: <strong style={{ color: "var(--text-main)" }}>{sessionData.user?.name || "교수"}</strong>님
             </p>
           </div>
-          <div style={{ textAlign: "right" }}>
-            <span className="font-display" style={{ fontSize: "14px", fontWeight: 700, color: "var(--secondary)" }}>건축설계 A</span>
-            <div style={{ fontSize: "11px", color: "var(--text-light)", marginTop: "2px" }}>[ DOA-MNU ]</div>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>
+            <div style={{ display: "inline-flex", padding: "2px", borderRadius: "8px", border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.03)" }} aria-label="학기 선택">
+              {(["2026-2", "2026-1"] as SemesterKey[]).map((semester) => (
+                <button
+                  key={semester}
+                  type="button"
+                  onClick={() => setSelectedSemester(semester)}
+                  className="btn"
+                  style={{
+                    padding: "4px 9px",
+                    fontSize: "11px",
+                    border: "none",
+                    borderRadius: "6px",
+                    background: selectedSemester === semester ? "var(--primary)" : "transparent",
+                    color: selectedSemester === semester ? "#fff" : "var(--text-muted)",
+                    fontWeight: selectedSemester === semester ? 700 : 500,
+                  }}
+                >
+                  {semester === "2026-2" ? "2학기" : "1학기"}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: "10px", color: isReadOnly ? "var(--danger)" : "var(--text-light)" }}>
+              {isReadOnly ? "건축설계 A · 1학기 조회 전용" : "건축설계 B · 2026학년도 2학기"}
+            </div>
           </div>
         </div>
       </div>
@@ -784,7 +829,7 @@ export default function Home() {
       <div className="glass-card" style={{ marginBottom: "12px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
           <h3 style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>수업 세션 설정</h3>
-          <span style={{ fontSize: "11px", color: "var(--text-light)" }}>⚙️ 설정에서 세션 추가</span>
+          <span style={{ fontSize: "11px", color: isReadOnly ? "var(--danger)" : "var(--text-light)" }}>{isReadOnly ? "조회 전용" : "⚙️ 설정에서 세션 추가"}</span>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
           <div>
@@ -814,13 +859,14 @@ export default function Home() {
       <div className="glass-card" style={{ marginBottom: "12px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
           <h3 style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>수업 공동 총평</h3>
-          <button onClick={handleSaveOverall} id="overall-btn" className="btn btn-secondary" style={{ padding: "6px 14px", fontSize: "12px" }}>
+          <button onClick={handleSaveOverall} disabled={isReadOnly} id="overall-btn" className="btn btn-secondary" style={{ padding: "6px 14px", fontSize: "12px", opacity: isReadOnly ? 0.5 : 1 }}>
             총평 저장
           </button>
         </div>
         <textarea
           value={overallText}
           onChange={(e) => setOverallText(e.target.value)}
+          readOnly={isReadOnly}
           placeholder="오늘 수업에서 전체 학생들에게 공통적으로 보완/강조할 총평을 작성하세요."
           style={{ minHeight: "100px", fontSize: "13px" }}
         />
@@ -962,6 +1008,7 @@ export default function Home() {
                   max="10" 
                   step="0.5" 
                   value={score} 
+                  disabled={isReadOnly}
                   onChange={(e) => setScore(Math.min(10, Math.max(0, parseFloat(e.target.value) || 0)))}
                   style={{ width: "70px", textAlign: "center", fontSize: "16px", fontWeight: 600, padding: "6px" }}
                 />
@@ -974,6 +1021,7 @@ export default function Home() {
               max="10" 
               step="0.5" 
               value={score} 
+              disabled={isReadOnly}
               onChange={(e) => setScore(parseFloat(e.target.value))}
               style={{ marginTop: "10px" }}
             />
@@ -984,10 +1032,12 @@ export default function Home() {
             <label>과제물 대표 이미지</label>
             <div 
               className={`image-uploader-box ${isDragOver ? "drag-over" : ""}`}
+              aria-disabled={isReadOnly}
               onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
               onDragLeave={() => setIsDragOver(false)}
               onDrop={handleDrop}
-              onClick={() => document.getElementById("file-input")?.click()}
+              onClick={() => !isReadOnly && document.getElementById("file-input")?.click()}
+              style={{ opacity: isReadOnly ? 0.65 : 1, cursor: isReadOnly ? "default" : "pointer" }}
             >
               {uploadingImage ? (
                 <>
@@ -1014,6 +1064,7 @@ export default function Home() {
               id="file-input" 
               type="file" 
               accept="image/*" 
+              disabled={isReadOnly}
               style={{ display: "none" }} 
               onChange={(e) => e.target.files && handleImageFile(e.target.files[0])}
             />
@@ -1025,12 +1076,13 @@ export default function Home() {
             <textarea
               value={critic}
               onChange={(e) => setCritic(e.target.value)}
-              placeholder="학생 개인별 크리틱 피드백을 입력하세요. 저장 시 Gemini AI가 작동하여 젠지(Gen-Z) 조언을 생성합니다."
+              readOnly={isReadOnly}
+              placeholder="학생 개인별 크리틱 피드백을 입력하세요. AI 조언은 학생 보드에서 필요할 때 별도로 생성할 수 있습니다."
               style={{ minHeight: "150px" }}
             />
             <div style={{ display: "flex", alignItems: "center", gap: "4px", marginTop: "6px" }}>
               <Info style={{ width: "12px", height: "12px", color: "var(--text-light)" }} />
-              <span style={{ fontSize: "11px", color: "var(--text-light)" }}>Gemini AI 조언은 저장 완료 후 학생 개별 보드에 즉시 노출됩니다.</span>
+              <span style={{ fontSize: "11px", color: "var(--text-light)" }}>평가 저장 시 AI 토큰은 사용되지 않습니다.</span>
             </div>
           </div>
 
@@ -1051,7 +1103,7 @@ export default function Home() {
               <button onClick={() => setSelectedStudent(null)} className="btn btn-secondary">
                 취소
               </button>
-              <button onClick={handleSaveEval} id="save-btn" className="btn btn-primary" style={{ gap: "6px" }}>
+              <button onClick={handleSaveEval} disabled={isReadOnly} id="save-btn" className="btn btn-primary" style={{ gap: "6px", opacity: isReadOnly ? 0.5 : 1 }}>
                 <Sparkles style={{ width: "15px", height: "15px" }} />
                 평가 저장
               </button>

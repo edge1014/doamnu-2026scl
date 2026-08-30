@@ -1,16 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchStudentEvaluations } from "@/lib/notion";
+import { normalizeSemester } from "@/lib/semester";
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const studentId = searchParams.get("studentId");
+    const semester = normalizeSemester(searchParams.get("semester"));
 
     if (!studentId) {
       return NextResponse.json({ error: "학생 ID가 필요합니다." }, { status: 400 });
     }
 
-    const evaluations = await fetchStudentEvaluations(studentId);
+    const evaluations = await fetchStudentEvaluations(studentId, semester);
     
     // Map internal fields to match the frontend expectations
     const mapped = evaluations.map((e) => ({

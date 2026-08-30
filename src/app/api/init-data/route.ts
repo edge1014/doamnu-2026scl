@@ -1,16 +1,18 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { fetchStudents, fetchSessions, fetchProfessors, findDefaultProfessor } from "@/lib/notion";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { normalizeSemester } from "@/lib/semester";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const semester = normalizeSemester(req.nextUrl.searchParams.get("semester"));
     const session: any = await getServerSession(authOptions);
     const sessionEmail = session?.user?.email;
 
     const [students, sessions, professors] = await Promise.all([
-      fetchStudents(),
-      fetchSessions(),
+      fetchStudents(semester),
+      fetchSessions(semester),
       fetchProfessors(),
     ]);
 
@@ -23,6 +25,7 @@ export async function GET() {
     return NextResponse.json({
       students,
       sessions,
+      semester,
       professors: professors.map(p => p.name), // Dynamic professor lists for UI select element
       authInfo: {
         isRegistered: !!matchedProf,

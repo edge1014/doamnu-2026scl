@@ -6,6 +6,7 @@ import { verifyProfessorPermission } from "@/lib/notion";
 import { mkdtemp, mkdir, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
+import { normalizeSemester } from "@/lib/semester";
 
 export async function POST(req: NextRequest) {
   try {
@@ -19,7 +20,8 @@ export async function POST(req: NextRequest) {
     }
     const sessionEmail = session?.user?.email;
 
-    const { action, sessionName, studentId, studentName, folderId, period, historyPeriod } = await req.json();
+    const { action, sessionName, studentId, studentName, folderId, period, historyPeriod, semester: semesterValue } = await req.json();
+    const semester = normalizeSemester(semesterValue);
     const accessToken = session.accessToken;
 
     // 2. Verify Access Permission & Division Permission
@@ -88,7 +90,7 @@ export async function POST(req: NextRequest) {
       // Determine local port
       const port = process.env.PORT || 3000;
       const baseUrl = `http://localhost:${port}`;
-      const targetUrl = `${baseUrl}/board?student=${studentId}&pdfMode=true&period=${period || "3w"}&historyPeriod=${historyPeriod || "2w"}`;
+      const targetUrl = `${baseUrl}/board?student=${studentId}&semester=${semester}&pdfMode=true&period=${period || "3w"}&historyPeriod=${historyPeriod || "2w"}`;
 
       console.log(`Rendering PDF for ${studentName} at: ${targetUrl}`);
 

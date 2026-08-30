@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSession, verifyProfessorPermission } from "@/lib/notion";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { isReadOnlySemester, normalizeSemester } from "@/lib/semester";
 
 export async function POST(req: NextRequest) {
   try {
@@ -10,6 +11,11 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const { sessionName, date, description } = body;
+    const semester = normalizeSemester(body.semester);
+
+    if (isReadOnlySemester(semester)) {
+      return NextResponse.json({ error: "1학기는 조회 전용입니다." }, { status: 403 });
+    }
 
     if (!sessionName || !date) {
       return NextResponse.json({ error: "세션명과 날짜는 필수 입력 사항입니다." }, { status: 400 });
@@ -21,7 +27,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: perm.error }, { status: 403 });
     }
 
-    const newSession = await createSession(sessionName, date, description || "");
+    const newSession = await createSession(sessionName, date, description || "", semester);
 
     if (!newSession) {
       throw new Error("세션이 정상적으로 생성되지 않았습니다.");

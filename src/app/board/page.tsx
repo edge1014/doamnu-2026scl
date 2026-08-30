@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useState, useEffect, useRef, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import Link from "next/link";
+import { normalizeSemester } from "@/lib/semester";
 import { Chart, registerables } from "chart.js";
 import { 
   Loader2, 
@@ -66,7 +67,10 @@ function normalizeDriveUrl(url: string): string {
 function StudentBoardContent() {
   const { data: sessionData } = useSession();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const studentParamId = searchParams.get("student") || "";
+  const selectedSemester = normalizeSemester(searchParams.get("semester"));
+  const isReadOnly = selectedSemester === "2026-1";
   const pdfMode = searchParams.get("pdfMode") === "true";
 
   const [darkMode, setDarkMode] = useState(false);
@@ -153,7 +157,7 @@ function StudentBoardContent() {
     setLoading(true);
     
     // Fetch all students and sessions to resolve data & build selector
-    fetch("/api/init-data")
+    fetch(`/api/init-data?semester=${selectedSemester}`)
       .then((res) => res.json())
       .then((data) => {
         setStudents(data.students || []);
@@ -170,7 +174,7 @@ function StudentBoardContent() {
         if (matched) {
           setStudent(matched);
           setSelectedDivision(matched.cls); // Pre-select division of active student
-          return fetch(`/api/scl?studentId=${matched.id}`)
+          return fetch(`/api/scl?studentId=${matched.id}&semester=${selectedSemester}`)
             .then((res) => res.json())
             .then((records) => ({ matched, records }));
         }
@@ -192,7 +196,7 @@ function StudentBoardContent() {
         console.error(err);
         setLoading(false);
       });
-  }, [studentParamId]);
+  }, [studentParamId, selectedSemester]);
 
   const matchedStudentId = () => student?.id;
 
@@ -200,7 +204,7 @@ function StudentBoardContent() {
   const loadAdvice = (sId: string, latestDate: string) => {
     if (!sId) return;
     setAdviceLoading(true);
-    fetch(`/api/advice?studentId=${sId}&latestDate=${latestDate}`)
+    fetch(`/api/advice?studentId=${sId}&latestDate=${latestDate}&semester=${selectedSemester}`)
       .then((res) => res.json())
       .then((data) => {
         setAiAdvice(data.advice || "");
@@ -214,6 +218,7 @@ function StudentBoardContent() {
 
   // Generate individual AI Advice manually
   const generateSingleAdvice = async () => {
+    if (isReadOnly) return;
     if (!student || allRecords.length === 0) return;
     const latestRecord = allRecords[allRecords.length - 1];
     const sessionObj = sessions.find((s) => s.id === latestRecord.sessionPageId);
@@ -229,6 +234,7 @@ function StudentBoardContent() {
           critic: latestRecord.critic,
           score: latestRecord.score,
           sessionName: sessionObj?.sessionName || "건축설계 세션",
+          semester: selectedSemester,
         }),
       });
       const data = await res.json();
@@ -268,6 +274,7 @@ function StudentBoardContent() {
         body: JSON.stringify({
           action: "create_folder",
           sessionName: sessionObj.sessionName,
+          semester: selectedSemester,
         }),
       });
       const folderData = await folderRes.json();
@@ -286,6 +293,7 @@ function StudentBoardContent() {
           folderId: folderData.folderId,
           period: period,
           historyPeriod: historyPeriod,
+          semester: selectedSemester,
         }),
       });
       const pdfData = await pdfRes.json();
@@ -304,10 +312,11 @@ function StudentBoardContent() {
 
   // Bulk Generate AI advice for all students in the selected division
   const bulkGenerateAdvice = async () => {
+    if (isReadOnly) return;
     const listToGenerate = students.filter(s => s.cls === selectedDivision);
     if (listToGenerate.length === 0) return;
 
-    if (!confirm(`${selectedDivision} 학생 ${listToGenerate.length}명에 대한 AI 조언 생성을 시작하시겠습니까?\n(Gemini API 호출이 순차적으로 진행됩니다.)`)) {
+    if (!confirm(`${selectedDivision} 학생 ${listToGenerate.length}명에 대한 AI 조언 생성을 시작하시겠습니까?\n(OpenRouter API 호출이 순차적으로 진행되며 선불 잔액이 사용됩니다.)`)) {
       return;
     }
 
@@ -319,7 +328,7 @@ function StudentBoardContent() {
         setBulkAdviceStatus(prev => ({ ...prev, progress: i + 1, message: `${currentStudent.name} AI 조언 생성 중...` }));
 
         // Fetch evaluations for this student
-        const recordsRes = await fetch(`/api/scl?studentId=${currentStudent.id}`);
+        const recordsRes = await fetch(`/api/scl?studentId=${currentStudent.id}&semester=${selectedSemester}`);
         const records = await recordsRes.json();
         
         if (records && records.length > 0) {
@@ -338,6 +347,7 @@ function StudentBoardContent() {
               critic: latestRecord.critic,
               score: latestRecord.score,
               sessionName: matchedSession?.sessionName || "건축설계 세션",
+              semester: selectedSemester,
             }),
           });
           const adviceData = await adviceRes.json();
@@ -392,6 +402,7 @@ function StudentBoardContent() {
         body: JSON.stringify({
           action: "create_folder",
           sessionName: targetSession.sessionName,
+          semester: selectedSemester,
         }),
       });
       const folderData = await folderRes.json();
@@ -417,6 +428,7 @@ function StudentBoardContent() {
             folderId: folderId,
             period: period,
             historyPeriod: historyPeriod,
+            semester: selectedSemester,
           }),
         });
         const pdfData = await pdfRes.json();
@@ -651,13 +663,26 @@ function StudentBoardContent() {
       {/* Navigation bar (hidden in PDF print) */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }} className="no-print">
         <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-          <Link href="/" style={{ fontSize: "14px", color: "var(--text-muted)", textDecoration: "none", fontWeight: 600 }}>
+          <Link href={`/?semester=${selectedSemester}`} style={{ fontSize: "14px", color: "var(--text-muted)", textDecoration: "none", fontWeight: 600 }}>
             평가 홈
           </Link>
           <span style={{ color: "var(--border-subtle)" }}>|</span>
           <span style={{ fontSize: "14px", fontWeight: 700, color: "var(--primary)" }}>학생 크리틱 대시보드</span>
         </div>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <div style={{ display: "inline-flex", padding: "2px", borderRadius: "8px", border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.03)" }} aria-label="학기 선택">
+            {(["2026-2", "2026-1"] as const).map((semester) => (
+              <button
+                key={semester}
+                type="button"
+                onClick={() => router.push(`/board?semester=${semester}`)}
+                className="btn"
+                style={{ padding: "4px 8px", fontSize: "10px", border: "none", borderRadius: "6px", background: selectedSemester === semester ? "var(--primary)" : "transparent", color: selectedSemester === semester ? "#fff" : "var(--text-muted)", fontWeight: selectedSemester === semester ? 700 : 500 }}
+              >
+                {semester === "2026-2" ? "2학기" : "1학기"}
+              </button>
+            ))}
+          </div>
           <button onClick={toggleTheme} className="theme-switch-btn" aria-label="Toggle theme">
             {darkMode ? <Sun style={{ width: "18px", height: "18px" }} /> : <Moon style={{ width: "18px", height: "18px" }} />}
           </button>
@@ -723,7 +748,7 @@ function StudentBoardContent() {
 
                 <button
                   onClick={() => { setShowSettingsDropdown(false); bulkGenerateAdvice(); }}
-                  disabled={!sessionData || !isRegistered || bulkAdviceStatus.loading || bulkPdfStatus.loading}
+                  disabled={isReadOnly || !sessionData || !isRegistered || bulkAdviceStatus.loading || bulkPdfStatus.loading}
                   className="btn"
                   style={{
                     justifyContent: "flex-start",
@@ -737,7 +762,7 @@ function StudentBoardContent() {
                     fontWeight: 500,
                     textAlign: "left",
                     cursor: bulkAdviceStatus.loading ? "default" : "pointer",
-                    opacity: !sessionData || !isRegistered ? 0.5 : 1,
+                  opacity: isReadOnly || !sessionData || !isRegistered ? 0.5 : 1,
                   }}
                   onMouseEnter={(e) => { if (!bulkAdviceStatus.loading) e.currentTarget.style.background = "var(--primary-light)"; }}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -823,7 +848,7 @@ function StudentBoardContent() {
               .map((s) => (
                 <Link
                   key={s.id}
-                  href={`/board?student=${s.id}`}
+                  href={`/board?student=${s.id}&semester=${selectedSemester}`}
                   className="btn"
                   style={{
                     padding: "4px 10px",
@@ -876,7 +901,7 @@ function StudentBoardContent() {
               {/* Bulk Generation of AI advice */}
               <button 
                 onClick={bulkGenerateAdvice} 
-                disabled={bulkAdviceStatus.loading || bulkPdfStatus.loading} 
+                disabled={isReadOnly || bulkAdviceStatus.loading || bulkPdfStatus.loading}
                 className="btn" 
                 style={{ padding: "6px 12px", fontSize: "11px", background: "var(--primary)", color: "#fff", border: "none", display: "inline-flex", alignItems: "center", gap: "4px", cursor: "pointer", fontWeight: 600 }}
               >
@@ -1178,7 +1203,7 @@ function StudentBoardContent() {
               {sessionData && isRegistered && !pdfMode && (
                 <button
                   onClick={generateSingleAdvice}
-                  disabled={singleAdviceGenerating || allRecords.length === 0}
+                  disabled={isReadOnly || singleAdviceGenerating || allRecords.length === 0}
                   className="btn"
                   style={{
                     padding: "3px 8px",

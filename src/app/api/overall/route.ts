@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { saveOverall, verifyProfessorPermission } from "@/lib/notion";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { isReadOnlySemester, normalizeSemester } from "@/lib/semester";
 
 export async function POST(req: NextRequest) {
   try {
@@ -10,6 +11,11 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const { sessionPageId, overall } = body;
+    const semester = normalizeSemester(body.semester);
+
+    if (isReadOnlySemester(semester)) {
+      return NextResponse.json({ error: "1학기는 조회 전용입니다." }, { status: 403 });
+    }
 
     if (!sessionPageId) {
       return NextResponse.json({ error: "세션 ID가 필요합니다." }, { status: 400 });

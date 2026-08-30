@@ -8,6 +8,7 @@ import {
   generateNotionPage,
   verifyProfessorPermission,
 } from "@/lib/notion";
+import { isReadOnlySemester, normalizeSemester } from "@/lib/semester";
 
 export async function POST(req: NextRequest) {
   // 1. 인증 확인 (교수 로그인 필요)
@@ -24,6 +25,11 @@ export async function POST(req: NextRequest) {
   // 2. 요청 본문에서 sessionId 추출
   const body = await req.json();
   const { sessionId } = body;
+  const semester = normalizeSemester(body.semester);
+
+  if (isReadOnlySemester(semester)) {
+    return NextResponse.json({ error: "1학기는 조회 전용입니다." }, { status: 403 });
+  }
 
   if (!sessionId) {
     return NextResponse.json({ error: "sessionId가 필요합니다." }, { status: 400 });
@@ -31,17 +37,17 @@ export async function POST(req: NextRequest) {
 
   try {
     // 3. 세션 정보 조회 (DB2)
-    const sessions = await fetchSessions();
+    const sessions = await fetchSessions(semester);
     const targetSession = sessions.find((s) => s.id === sessionId);
     if (!targetSession) {
       return NextResponse.json({ error: "세션을 찾을 수 없습니다." }, { status: 404 });
     }
 
     // 4. 전체 학생 목록 조회 (DB1)
-    const students = await fetchStudents();
+    const students = await fetchStudents(semester);
 
     // 5. 해당 세션의 평가 전체 조회 (DB3)
-    const evaluations = await fetchEvaluationsBySession(sessionId);
+    const evaluations = await fetchEvaluationsBySession(sessionId, semester);
 
     // 6. Notion 페이지 생성 (기존 블록 삭제 후 재작성)
     const result = await generateNotionPage({

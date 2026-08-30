@@ -1,16 +1,33 @@
 import { Client } from "@notionhq/client";
+import { DEFAULT_SEMESTER, type SemesterKey } from "@/lib/semester";
 
 // Initialize Notion Client
 const token = process.env.NOTION_TOKEN;
-const dbStudents = process.env.NOTION_DB_STUDENTS;
-const dbSessions = process.env.NOTION_DB_SESSIONS;
-const dbEvaluations = process.env.NOTION_DB_EVALUATIONS;
 
 const notion = token ? new Client({ auth: token }) : null;
 
+function getSemesterDatabases(semester: SemesterKey = DEFAULT_SEMESTER) {
+  if (semester === "2026-1") {
+    return {
+      students: process.env.NOTION_DB_STUDENTS_2026_1 || process.env.NOTION_DB_STUDENTS,
+      sessions: process.env.NOTION_DB_SESSIONS_2026_1 || process.env.NOTION_DB_SESSIONS,
+      evaluations: process.env.NOTION_DB_EVALUATIONS_2026_1 || process.env.NOTION_DB_EVALUATIONS,
+      advice: process.env.NOTION_DB_ADVICE_2026_1 || process.env.NOTION_DB_ADVICE,
+    };
+  }
+
+  return {
+    students: process.env.NOTION_DB_STUDENTS_2026_2 || "130e80eb-de5a-48a3-b5ee-4f67bbb91d2e",
+    sessions: process.env.NOTION_DB_SESSIONS_2026_2 || "8904bdf3-64b5-4b56-b291-f382fe0a85f5",
+    evaluations: process.env.NOTION_DB_EVALUATIONS_2026_2 || "c4a47111-b8cd-4657-84c1-553cf39d8f13",
+    advice: process.env.NOTION_DB_ADVICE_2026_2 || "533ce1b8-d003-40b4-8805-0561990e875c",
+  };
+}
+
 // Helper to check if Notion is configured
-export function isNotionConfigured(): boolean {
-  return !!(notion && dbStudents && dbSessions && dbEvaluations);
+export function isNotionConfigured(semester: SemesterKey = DEFAULT_SEMESTER): boolean {
+  const databases = getSemesterDatabases(semester);
+  return !!(notion && databases.students && databases.sessions && databases.evaluations);
 }
 
 // Interfaces
@@ -41,25 +58,6 @@ export interface Evaluation {
   notionUrl?: string;
 }
 
-// Fallback Mock Data for safe boot if env vars are missing
-const mockStudents: Student[] = [
-  { id: "u1", name: "강민우", cls: "1분반", order: 1 },
-  { id: "u2", name: "김민우", cls: "1분반", order: 2 },
-  { id: "u3", name: "박승민", cls: "1분반", order: 3 },
-  { id: "u4", name: "이찬", cls: "1분반", order: 4 },
-  { id: "u5", name: "정영기", cls: "1분반", order: 5 },
-];
-
-const mockSessions: Session[] = [
-  {
-    id: "s1",
-    sessionName: "[Mock] 0522 대안발전 : 스케치업, 형태 매스스터디",
-    date: "2026-05-22",
-    overall: "서버가 아직 연동되지 않았습니다. .env.local 설정을 완료해 주세요.",
-    description: "테스트용 세션 설명입니다.",
-  },
-];
-
 // Helper to extract plain text from Notion rich text properties
 function getRichTextPlain(property: any): string {
   if (!property || property.type !== "rich_text") return "";
@@ -67,10 +65,11 @@ function getRichTextPlain(property: any): string {
 }
 
 // Fetch all students from DB1
-export async function fetchStudents(): Promise<Student[]> {
-  if (!isNotionConfigured() || !notion || !dbStudents) {
-    console.warn("Notion is not configured. Returning mock students.");
-    return mockStudents;
+export async function fetchStudents(semester: SemesterKey = DEFAULT_SEMESTER): Promise<Student[]> {
+  const { students: dbStudents } = getSemesterDatabases(semester);
+  if (!isNotionConfigured(semester) || !notion || !dbStudents) {
+    console.warn(`Notion student database is not configured for ${semester}.`);
+    return [];
   }
 
   try {
@@ -95,15 +94,16 @@ export async function fetchStudents(): Promise<Student[]> {
     });
   } catch (error) {
     console.error("Error fetching students from Notion:", error);
-    return mockStudents;
+    return [];
   }
 }
 
 // Fetch all sessions from DB2
-export async function fetchSessions(): Promise<Session[]> {
-  if (!isNotionConfigured() || !notion || !dbSessions) {
-    console.warn("Notion is not configured. Returning mock sessions.");
-    return mockSessions;
+export async function fetchSessions(semester: SemesterKey = DEFAULT_SEMESTER): Promise<Session[]> {
+  const { sessions: dbSessions } = getSemesterDatabases(semester);
+  if (!isNotionConfigured(semester) || !notion || !dbSessions) {
+    console.warn(`Notion session database is not configured for ${semester}.`);
+    return [];
   }
 
   try {
@@ -127,14 +127,15 @@ export async function fetchSessions(): Promise<Session[]> {
     });
   } catch (error) {
     console.error("Error fetching sessions from Notion:", error);
-    return mockSessions;
+    return [];
   }
 }
 
 // Fetch evaluations for a specific session from DB3
-export async function fetchEvaluationsBySession(sessionId: string): Promise<Record<string, Evaluation>> {
+export async function fetchEvaluationsBySession(sessionId: string, semester: SemesterKey = DEFAULT_SEMESTER): Promise<Record<string, Evaluation>> {
   const result: Record<string, Evaluation> = {};
-  if (!isNotionConfigured() || !notion || !dbEvaluations) {
+  const { evaluations: dbEvaluations } = getSemesterDatabases(semester);
+  if (!isNotionConfigured(semester) || !notion || !dbEvaluations) {
     return result;
   }
 
@@ -186,8 +187,9 @@ export async function fetchEvaluationsBySession(sessionId: string): Promise<Reco
 }
 
 // Fetch all evaluation logs for a specific student from DB3
-export async function fetchStudentEvaluations(studentId: string): Promise<Evaluation[]> {
-  if (!isNotionConfigured() || !notion || !dbEvaluations) {
+export async function fetchStudentEvaluations(studentId: string, semester: SemesterKey = DEFAULT_SEMESTER): Promise<Evaluation[]> {
+  const { evaluations: dbEvaluations } = getSemesterDatabases(semester);
+  if (!isNotionConfigured(semester) || !notion || !dbEvaluations) {
     return [];
   }
 
@@ -241,6 +243,7 @@ export async function fetchStudentEvaluations(studentId: string): Promise<Evalua
 
 // Save or Update an Evaluation record in DB3
 export async function saveEvaluation(params: {
+  semester?: SemesterKey;
   studentPageId: string;
   studentName: string;
   sessionPageId: string;
@@ -250,7 +253,8 @@ export async function saveEvaluation(params: {
   critic: string;
   imageUrl?: string;
 }): Promise<Evaluation> {
-  if (!isNotionConfigured() || !notion || !dbEvaluations) {
+  const { evaluations: dbEvaluations } = getSemesterDatabases(params.semester);
+  if (!isNotionConfigured(params.semester) || !notion || !dbEvaluations) {
     throw new Error("Notion is not configured.");
   }
 
@@ -398,8 +402,8 @@ export async function updateEvaluation(params: { pageId: string; score: number; 
 }
 
 // Fetch student AI advice from DB4
-export async function fetchStudentAdvice(studentId: string): Promise<{ pageId: string; date: string; advice: string } | null> {
-  const dbAdvice = process.env.NOTION_DB_ADVICE;
+export async function fetchStudentAdvice(studentId: string, semester: SemesterKey = DEFAULT_SEMESTER): Promise<{ pageId: string; date: string; advice: string } | null> {
+  const { advice: dbAdvice } = getSemesterDatabases(semester);
   if (!notion || !dbAdvice) {
     console.warn("Notion Client or DB4 ID is missing.");
     return null;
@@ -442,12 +446,13 @@ export async function fetchStudentAdvice(studentId: string): Promise<{ pageId: s
 
 // Save or Update AI advice in DB4
 export async function saveStudentAdvice(params: {
+  semester?: SemesterKey;
   studentId: string;
   studentName: string;
   date: string;
   advice: string;
 }): Promise<void> {
-  const dbAdvice = process.env.NOTION_DB_ADVICE;
+  const { advice: dbAdvice } = getSemesterDatabases(params.semester);
   if (!notion || !dbAdvice) {
     throw new Error("Notion Client or DB4 ID is missing.");
   }
@@ -680,8 +685,8 @@ export async function verifyProfessorPermissionByEvaluation(
 }
 
 // Add a new session to Notion DB2
-export async function createSession(sessionName: string, date: string, description: string = ""): Promise<Session | null> {
-  const dbSessions = process.env.NOTION_DB_SESSIONS;
+export async function createSession(sessionName: string, date: string, description: string = "", semester: SemesterKey = DEFAULT_SEMESTER): Promise<Session | null> {
+  const { sessions: dbSessions } = getSemesterDatabases(semester);
   if (!notion || !dbSessions) {
     console.warn("Notion is not configured for creating sessions.");
     return null;
@@ -720,10 +725,6 @@ export async function createSession(sessionName: string, date: string, descripti
 // ─────────────────────────────────────────────────────────────────────────────
 // Notion 수업 페이지 자동 생성
 // ─────────────────────────────────────────────────────────────────────────────
-
-// Fixed student order for page generation (1분반 → 2분반 고정 순서)
-export const CLASS_1_ORDER = ["강민우","김민우","박승민","이찬","정영기","조은준","최태빈","권은재","김민채","유동성","주아름","이용욱","송창서","조혜정","김성용"];
-export const CLASS_2_ORDER = ["강진욱","박주원","안태환","이지우","추민혁","신현빈","윤혜빈","배수연","김재민","김영우","박소희","김정진","백주은","정수린","연태률"];
 
 // Normalize image URL to lh3.googleusercontent.com format for Notion compatibility
 function normalizeImageUrl(url: string): string {
@@ -769,18 +770,12 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
     }
 
     // ── Step 2: 학생 순서 정렬 ───────────────────────────────────────────────
-    const cls1Students = CLASS_1_ORDER
-      .map(name => students.find(s => s.name === name && s.cls === "1분반"))
-      .filter(Boolean) as Student[];
-    const cls2Students = CLASS_2_ORDER
-      .map(name => students.find(s => s.name === name && s.cls === "2분반"))
-      .filter(Boolean) as Student[];
-
-    // 고정 순서에 없는 학생들 뒤에 추가
-    const cls1Extra = students.filter(s => s.cls === "1분반" && !CLASS_1_ORDER.includes(s.name));
-    const cls2Extra = students.filter(s => s.cls === "2분반" && !CLASS_2_ORDER.includes(s.name));
-    const ordered1 = [...cls1Students, ...cls1Extra];
-    const ordered2 = [...cls2Students, ...cls2Extra];
+    const ordered1 = students
+      .filter(s => s.cls === "1분반")
+      .sort((a, b) => a.order - b.order);
+    const ordered2 = students
+      .filter(s => s.cls === "2분반")
+      .sort((a, b) => a.order - b.order);
 
     // ── Step 3: 학생별 토글 블록 빌드 ───────────────────────────────────────
     const buildStudentToggle = (st: Student): any => {
