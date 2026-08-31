@@ -36,6 +36,7 @@ interface Session {
   id: string;
   sessionName: string;
   date: string;
+  division: "1분반" | "2분반" | "";
   overall: string;
   overallClass1: string;
   overallClass2: string;
@@ -129,6 +130,10 @@ export default function Home() {
   const evalPanelRef = useRef<HTMLDivElement>(null);
   const isReadOnly = selectedSemester === "2026-1";
   const overallDivision: "1분반" | "2분반" = selectedProfessor === "김태훈" ? "1분반" : "2분반";
+  const sessionDivision = selectedSemester === "2026-2" && currentFilter !== "all" ? currentFilter : null;
+  const visibleSessions = sessionDivision
+    ? sessions.filter((session) => session.division === sessionDivision)
+    : sessions;
   const getSessionOverall = (session: Session) => {
     if (selectedSemester === "2026-1") return session.overall || "";
     return overallDivision === "1분반" ? session.overallClass1 || "" : session.overallClass2 || "";
@@ -180,7 +185,7 @@ export default function Home() {
           if (data.students) setStudents(data.students);
           if (data.sessions) {
             setSessions(data.sessions);
-            if (data.sessions.length > 0) {
+            if (selectedSemester === "2026-1" && data.sessions.length > 0) {
               // Select most recent session by default
               setCurrentSessionId(data.sessions[0].id);
               setOverallText(getSessionOverall(data.sessions[0]));
@@ -226,6 +231,19 @@ export default function Home() {
       setLoading(false);
     }
   }, [status, selectedSemester]);
+
+  // 2학기는 분반별 독립 세션을 사용한다. 학생 목록 분반을 바꾸면 해당 분반의 최근 세션으로 전환한다.
+  useEffect(() => {
+    if (!sessionDivision) return;
+    const matchingSessions = sessions.filter((session) => session.division === sessionDivision);
+    if (matchingSessions.length === 0) {
+      if (currentSessionId) setCurrentSessionId("");
+      return;
+    }
+    if (!matchingSessions.some((session) => session.id === currentSessionId)) {
+      setCurrentSessionId(matchingSessions[0].id);
+    }
+  }, [sessionDivision, sessions, currentSessionId]);
 
   // 3. Fetch Evaluations when Session Changes
   useEffect(() => {
@@ -321,6 +339,7 @@ export default function Home() {
           sessionName: newSessionName.trim(),
           date: newSessionDate.trim(),
           description: newSessionDesc.trim(),
+          division: overallDivision,
           semester: selectedSemester,
         }),
       });
@@ -331,7 +350,8 @@ export default function Home() {
         const created: Session = data.session;
         setSessions(prev => [created, ...prev]);
         
-        // Select the newly created session
+        // 새 세션의 분반과 학생 목록을 함께 맞춘다.
+        setCurrentFilter(created.division || overallDivision);
         setCurrentSessionId(created.id);
         setOverallText("");
         
@@ -854,11 +874,12 @@ export default function Home() {
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
           <div>
-            <label>수업 날짜 / 세션</label>
+            <label>수업 날짜 / 세션 {sessionDivision ? `(${sessionDivision})` : ""}</label>
             <select value={currentSessionId} onChange={(e) => setCurrentSessionId(e.target.value)}>
-              {sessions.map((s) => (
+              {visibleSessions.length === 0 && <option value="">선택된 분반의 세션이 없습니다.</option>}
+              {visibleSessions.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.date ? `${s.date.substring(5).replace("-", "/")} — ` : ""}{s.sessionName}
+                  {s.date ? `${s.date.substring(5).replace("-", "/")} — ` : ""}{s.sessionName}{!sessionDivision && s.division ? ` · ${s.division}` : ""}
                 </option>
               ))}
             </select>
@@ -1270,6 +1291,13 @@ export default function Home() {
             <h4 style={{ fontSize: "18px", marginBottom: "16px", fontWeight: 700, textAlign: "center" }}>새 수업 세션 추가</h4>
             
             <form onSubmit={handleCreateSession} style={{ display: "flex", flexDirection: "column", gap: "14px", textAlign: "left" }}>
+              <div>
+                <label>대상 분반</label>
+                <div style={{ padding: "10px 12px", borderRadius: "8px", background: "var(--primary-light)", color: "var(--primary)", fontSize: "13px", fontWeight: 700 }}>
+                  {overallDivision} <span style={{ fontSize: "11px", fontWeight: 500 }}>(접속 교수 기준 자동 지정)</span>
+                </div>
+              </div>
+
               <div>
                 <label>수업 날짜</label>
                 <input 

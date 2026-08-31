@@ -42,6 +42,7 @@ export interface Session {
   id: string;
   sessionName: string;
   date: string;
+  division: "1분반" | "2분반" | "";
   overall: string;
   overallClass1: string;
   overallClass2: string;
@@ -117,6 +118,7 @@ export async function fetchSessions(semester: SemesterKey = DEFAULT_SEMESTER): P
     return response.results.map((page: any) => {
       const sessionName = page.properties["세션명"]?.title?.[0]?.plain_text || "세션명 없음";
       const date = page.properties["날짜"]?.date?.start || "";
+      const division = page.properties["분반"]?.select?.name || "";
       const overall = getRichTextPlain(page.properties["총평"]);
       const overallClass1 = getRichTextPlain(page.properties["1분반 총평"]) || (semester === "2026-1" ? overall : "");
       const overallClass2 = getRichTextPlain(page.properties["2분반 총평"]) || (semester === "2026-1" ? overall : "");
@@ -125,6 +127,7 @@ export async function fetchSessions(semester: SemesterKey = DEFAULT_SEMESTER): P
         id: page.id,
         sessionName,
         date,
+        division: division as Session["division"],
         overall,
         overallClass1,
         overallClass2,
@@ -692,7 +695,13 @@ export async function verifyProfessorPermissionByEvaluation(
 }
 
 // Add a new session to Notion DB2
-export async function createSession(sessionName: string, date: string, description: string = "", semester: SemesterKey = DEFAULT_SEMESTER): Promise<Session | null> {
+export async function createSession(
+  sessionName: string,
+  date: string,
+  description: string = "",
+  semester: SemesterKey = DEFAULT_SEMESTER,
+  division: "1분반" | "2분반" = "1분반"
+): Promise<Session | null> {
   const { sessions: dbSessions } = getSemesterDatabases(semester);
   if (!notion || !dbSessions) {
     console.warn("Notion is not configured for creating sessions.");
@@ -712,6 +721,9 @@ export async function createSession(sessionName: string, date: string, descripti
         "과제설명": {
           rich_text: [{ text: { content: description } }],
         },
+        ...(semester === "2026-2" ? {
+          "분반": { select: { name: division } },
+        } : {}),
       },
     });
 
@@ -719,6 +731,7 @@ export async function createSession(sessionName: string, date: string, descripti
       id: response.id,
       sessionName,
       date,
+      division: semester === "2026-2" ? division : "",
       overall: "",
       overallClass1: "",
       overallClass2: "",
@@ -759,6 +772,7 @@ export interface NotionPageInput {
   sessionPageId: string;
   sessionName: string;
   description: string;
+  division: "1분반" | "2분반" | "";
   overallClass1: string;
   overallClass2: string;
   students: Student[];
@@ -770,7 +784,7 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
     return { success: false, error: "Notion 클라이언트가 설정되지 않았습니다." };
   }
 
-  const { sessionPageId, sessionName, description, overallClass1, overallClass2, students, evaluations } = input;
+  const { sessionPageId, sessionName, description, division, overallClass1, overallClass2, students, evaluations } = input;
 
   try {
     // ── Step 1: 기존 블록 모두 삭제 ──────────────────────────────────────────
@@ -780,10 +794,11 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
     }
 
     // ── Step 2: 학생 순서 정렬 ───────────────────────────────────────────────
-    const ordered1 = students
+    const sessionStudents = division ? students.filter(s => s.cls === division) : students;
+    const ordered1 = sessionStudents
       .filter(s => s.cls === "1분반")
       .sort((a, b) => a.order - b.order);
-    const ordered2 = students
+    const ordered2 = sessionStudents
       .filter(s => s.cls === "2분반")
       .sort((a, b) => a.order - b.order);
 
@@ -854,22 +869,12 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
             {
               object: "block",
               type: "heading_3",
-              heading_3: { rich_text: [{ type: "text", text: { content: "1분반 총평" } }] },
+              heading_3: { rich_text: [{ type: "text", text: { content: `${division || "1분반"} 총평` } }] },
             },
             {
               object: "block",
               type: "paragraph",
-              paragraph: { rich_text: buildRichText(overallClass1 || "(총평 없음)") },
-            },
-            {
-              object: "block",
-              type: "heading_3",
-              heading_3: { rich_text: [{ type: "text", text: { content: "2분반 총평" } }] },
-            },
-            {
-              object: "block",
-              type: "paragraph",
-              paragraph: { rich_text: buildRichText(overallClass2 || "(총평 없음)") },
+              paragraph: { rich_text: buildRichText((division === "2분반" ? overallClass2 : overallClass1) || "(총평 없음)") },
             },
           ],
         },
@@ -881,22 +886,16 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
         toggle: {
           rich_text: [{ type: "text", text: { content: "개인별 크리틱 및 평가" } }],
           children: [
-            {
+            ...(division !== "2분반" ? [{
               object: "block",
               type: "heading_3",
-              heading_3: {
-                rich_text: [{ type: "text", text: { content: "1분반" } }],
-              },
-            },
-            ...ordered1.map(buildStudentToggle),
-            {
+              heading_3: { rich_text: [{ type: "text", text: { content: "1분반" } }] },
+            }, ...ordered1.map(buildStudentToggle)] : []),
+            ...(division !== "1분반" ? [{
               object: "block",
               type: "heading_3",
-              heading_3: {
-                rich_text: [{ type: "text", text: { content: "2분반" } }],
-              },
-            },
-            ...ordered2.map(buildStudentToggle),
+              heading_3: { rich_text: [{ type: "text", text: { content: "2분반" } }] },
+            }, ...ordered2.map(buildStudentToggle)] : []),
           ],
         },
       },
