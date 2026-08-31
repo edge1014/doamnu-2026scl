@@ -37,6 +37,8 @@ interface Session {
   sessionName: string;
   date: string;
   overall: string;
+  overallClass1: string;
+  overallClass2: string;
   description: string;
 }
 
@@ -126,6 +128,11 @@ export default function Home() {
 
   const evalPanelRef = useRef<HTMLDivElement>(null);
   const isReadOnly = selectedSemester === "2026-1";
+  const overallDivision: "1분반" | "2분반" = selectedProfessor === "김태훈" ? "1분반" : "2분반";
+  const getSessionOverall = (session: Session) => {
+    if (selectedSemester === "2026-1") return session.overall || "";
+    return overallDivision === "1분반" ? session.overallClass1 || "" : session.overallClass2 || "";
+  };
 
   // Close settings dropdown on outside click
   useEffect(() => {
@@ -176,7 +183,7 @@ export default function Home() {
             if (data.sessions.length > 0) {
               // Select most recent session by default
               setCurrentSessionId(data.sessions[0].id);
-              setOverallText(data.sessions[0].overall || "");
+              setOverallText(getSessionOverall(data.sessions[0]));
             }
           }
           let resolvedProfessors = ["김태훈", "정미연", "하신해"];
@@ -228,11 +235,6 @@ export default function Home() {
         .then((res) => res.json())
         .then((data) => {
           setEvalMap(data);
-          // Set overall text for session
-          const selectedSession = sessions.find((s) => s.id === currentSessionId);
-          if (selectedSession) {
-            setOverallText(selectedSession.overall || "");
-          }
           setEvalsLoading(false);
           setSelectedStudent(null);
         })
@@ -241,7 +243,13 @@ export default function Home() {
           setEvalsLoading(false);
         });
     }
-  }, [currentSessionId, sessions, selectedSemester]);
+  }, [currentSessionId, selectedSemester]);
+
+  // 현재 로그인/선택 교수의 담당 분반 총평을 세션별로 불러온다.
+  useEffect(() => {
+    const selectedSession = sessions.find((s) => s.id === currentSessionId);
+    if (selectedSession) setOverallText(getSessionOverall(selectedSession));
+  }, [currentSessionId, sessions, selectedSemester, selectedProfessor, overallDivision]);
 
   // Toast message helper
   const showToast = (msg: string) => {
@@ -469,6 +477,7 @@ export default function Home() {
         body: JSON.stringify({
           sessionPageId: currentSessionId,
           overall: overallText,
+          division: overallDivision,
           semester: selectedSemester,
         }),
       });
@@ -476,9 +485,14 @@ export default function Home() {
       if (res.ok) {
         // Update session text locally
         setSessions((prev) =>
-          prev.map((s) => (s.id === currentSessionId ? { ...s, overall: overallText } : s))
+          prev.map((s) => {
+            if (s.id !== currentSessionId) return s;
+            return overallDivision === "1분반"
+              ? { ...s, overallClass1: overallText }
+              : { ...s, overallClass2: overallText };
+          })
         );
-        showToast("수업 총평 저장 완료!");
+        showToast(`${overallDivision} 총평 저장 완료!`);
       } else {
         const data = await res.json();
         throw new Error(data.error || "총평 저장 실패");
@@ -865,7 +879,9 @@ export default function Home() {
       {/* 4. Session Overall Comment Card */}
       <div className="glass-card" style={{ marginBottom: "12px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-          <h3 style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>수업 공동 총평</h3>
+          <h3 style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            {isReadOnly ? "수업 공동 총평" : `${overallDivision} 수업 총평`}
+          </h3>
           <button onClick={handleSaveOverall} disabled={isReadOnly} id="overall-btn" className="btn btn-secondary" style={{ padding: "6px 14px", fontSize: "12px", opacity: isReadOnly ? 0.5 : 1 }}>
             총평 저장
           </button>
@@ -874,7 +890,7 @@ export default function Home() {
           value={overallText}
           onChange={(e) => setOverallText(e.target.value)}
           readOnly={isReadOnly}
-          placeholder="오늘 수업에서 전체 학생들에게 공통적으로 보완/강조할 총평을 작성하세요."
+          placeholder={isReadOnly ? "수업 총평을 확인하세요." : `오늘 ${overallDivision} 학생들에게 공통으로 보완·강조할 총평을 작성하세요.`}
           style={{ minHeight: "100px", fontSize: "13px" }}
         />
       </div>

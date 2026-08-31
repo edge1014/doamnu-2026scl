@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
     const sessionEmail = session?.user?.email;
 
     const body = await req.json();
-    const { sessionPageId, overall } = body;
+    const { sessionPageId, overall, division } = body;
     const semester = normalizeSemester(body.semester);
 
     if (isReadOnlySemester(semester)) {
@@ -19,6 +19,10 @@ export async function POST(req: NextRequest) {
 
     if (!sessionPageId) {
       return NextResponse.json({ error: "세션 ID가 필요합니다." }, { status: 400 });
+    }
+
+    if (division !== "1분반" && division !== "2분반") {
+      return NextResponse.json({ error: "총평 대상 분반이 필요합니다." }, { status: 400 });
     }
 
     // 1. Verify Access Permission (Any registered professor)
@@ -30,6 +34,8 @@ export async function POST(req: NextRequest) {
     await saveOverall({
       sessionPageId,
       overall,
+      division,
+      semester,
     });
 
     return NextResponse.json({ success: true });

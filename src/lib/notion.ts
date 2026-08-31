@@ -43,6 +43,8 @@ export interface Session {
   sessionName: string;
   date: string;
   overall: string;
+  overallClass1: string;
+  overallClass2: string;
   description: string;
 }
 
@@ -116,12 +118,16 @@ export async function fetchSessions(semester: SemesterKey = DEFAULT_SEMESTER): P
       const sessionName = page.properties["세션명"]?.title?.[0]?.plain_text || "세션명 없음";
       const date = page.properties["날짜"]?.date?.start || "";
       const overall = getRichTextPlain(page.properties["총평"]);
+      const overallClass1 = getRichTextPlain(page.properties["1분반 총평"]) || (semester === "2026-1" ? overall : "");
+      const overallClass2 = getRichTextPlain(page.properties["2분반 총평"]) || (semester === "2026-1" ? overall : "");
       const description = getRichTextPlain(page.properties["과제설명"]);
       return {
         id: page.id,
         sessionName,
         date,
         overall,
+        overallClass1,
+        overallClass2,
         description,
       };
     });
@@ -353,18 +359,19 @@ export async function saveEvaluation(params: {
 }
 
 // Update Overall Session review in DB2
-export async function saveOverall(params: { sessionPageId: string; overall: string }): Promise<void> {
-  if (!isNotionConfigured() || !notion) {
+export async function saveOverall(params: { sessionPageId: string; overall: string; division: "1분반" | "2분반"; semester: SemesterKey }): Promise<void> {
+  const { sessionPageId, overall, division, semester } = params;
+  if (!isNotionConfigured(semester) || !notion) {
     throw new Error("Notion is not configured.");
   }
 
-  const { sessionPageId, overall } = params;
+  const propertyName = semester === "2026-2" ? `${division} 총평` : "총평";
 
   try {
     await notion.pages.update({
       page_id: sessionPageId,
       properties: {
-        "총평": {
+        [propertyName]: {
           rich_text: [{ text: { content: overall } }],
         },
       },
@@ -713,6 +720,8 @@ export async function createSession(sessionName: string, date: string, descripti
       sessionName,
       date,
       overall: "",
+      overallClass1: "",
+      overallClass2: "",
       description,
     };
   } catch (error) {
@@ -750,7 +759,8 @@ export interface NotionPageInput {
   sessionPageId: string;
   sessionName: string;
   description: string;
-  overall: string;
+  overallClass1: string;
+  overallClass2: string;
   students: Student[];
   evaluations: Record<string, Evaluation>; // studentId → Evaluation
 }
@@ -760,7 +770,7 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
     return { success: false, error: "Notion 클라이언트가 설정되지 않았습니다." };
   }
 
-  const { sessionPageId, sessionName, description, overall, students, evaluations } = input;
+  const { sessionPageId, sessionName, description, overallClass1, overallClass2, students, evaluations } = input;
 
   try {
     // ── Step 1: 기존 블록 모두 삭제 ──────────────────────────────────────────
@@ -834,17 +844,32 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
           ],
         },
       },
-      // [총평] 토글
+      // [분반별 총평] 토글
       {
         object: "block",
         type: "toggle",
         toggle: {
-          rich_text: [{ type: "text", text: { content: "총평" } }],
+          rich_text: [{ type: "text", text: { content: "분반별 총평" } }],
           children: [
             {
               object: "block",
+              type: "heading_3",
+              heading_3: { rich_text: [{ type: "text", text: { content: "1분반 총평" } }] },
+            },
+            {
+              object: "block",
               type: "paragraph",
-              paragraph: { rich_text: buildRichText(overall || "(총평 없음)") },
+              paragraph: { rich_text: buildRichText(overallClass1 || "(총평 없음)") },
+            },
+            {
+              object: "block",
+              type: "heading_3",
+              heading_3: { rich_text: [{ type: "text", text: { content: "2분반 총평" } }] },
+            },
+            {
+              object: "block",
+              type: "paragraph",
+              paragraph: { rich_text: buildRichText(overallClass2 || "(총평 없음)") },
             },
           ],
         },

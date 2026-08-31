@@ -54,7 +54,8 @@ export async function POST(req: NextRequest) {
       sessionPageId: sessionId,
       sessionName: targetSession.sessionName,
       description: targetSession.description,
-      overall: targetSession.overall,
+      overallClass1: targetSession.overallClass1,
+      overallClass2: targetSession.overallClass2,
       students,
       evaluations,
     });
