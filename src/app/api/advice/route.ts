@@ -5,6 +5,7 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { isReadOnlySemester, normalizeSemester } from "@/lib/semester";
 
 const openRouterApiKey = process.env.OPENROUTER_API_KEY;
+const openRouterModel = process.env.OPENROUTER_MODEL || "google/gemini-2.5-flash";
 
 export async function GET(req: NextRequest) {
   try {
@@ -102,10 +103,10 @@ ${studentName}아, (마무리 격려 메시지를 젠지 말투로 써줘. 예: 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        Authorization: `Bearer ${openRouterApiKey}`,
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: openRouterModel,
         messages: [
           { role: "user", content: prompt },
         ],
