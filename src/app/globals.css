@@ -1,7 +1,7 @@
 /* Design System & Visual Aesthetics Configuration */
 :root {
   /* Font Family Variables */
-  --font-sans-fallback: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-sans-fallback: var(--font-korean), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-display-fallback: "Outfit", var(--font-sans-fallback);
   
   /* Color Palettes (HSL Tailored) */

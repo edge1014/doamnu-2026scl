@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, Outfit } from "next/font/google";
+import { Inter, Noto_Sans_KR, Outfit } from "next/font/google";
 import { Providers } from "./providers";
 import "./globals.css";
 
@@ -11,6 +11,12 @@ const inter = Inter({
 const outfit = Outfit({
   variable: "--font-display",
   subsets: ["latin"],
+});
+
+const notoSansKr = Noto_Sans_KR({
+  variable: "--font-korean",
+  display: "swap",
+  weight: "variable",
 });
 
 export const metadata: Metadata = {
@@ -29,7 +35,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ko" className={`${inter.variable} ${outfit.variable}`}>
+    <html lang="ko" className={`${inter.variable} ${outfit.variable} ${notoSansKr.variable}`}>
       <body style={{ margin: 0, padding: 0 }}>
         <Providers>{children}</Providers>
       </body>
