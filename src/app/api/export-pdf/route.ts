@@ -3,10 +3,12 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { fetchStudents, verifyProfessorPermission } from "@/lib/notion";
 import { normalizeSemester } from "@/lib/semester";
-import puppeteer from "puppeteer";
+import puppeteer from "puppeteer-core";
 import { mkdtemp, mkdir, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
+
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
@@ -33,7 +35,7 @@ export async function POST(req: NextRequest) {
       period: "all",
       historyPeriod: "3w",
     });
-    const targetUrl = `http://localhost:${process.env.PORT || 3000}/board?${query.toString()}`;
+    const targetUrl = `${req.nextUrl.origin}/board?${query.toString()}`;
     const userDataDir = await mkdtemp(join(tmpdir(), "scl-chrome-profile-"));
     const crashDumpsDir = join(tmpdir(), "scl-chrome-crashes");
     await mkdir(crashDumpsDir, { recursive: true });
@@ -41,9 +43,14 @@ export async function POST(req: NextRequest) {
     let browser;
     let pdfBuffer: Buffer;
     try {
+      const isVercel = Boolean(process.env.VERCEL);
+      const chromium = isVercel ? (await import("@sparticuz/chromium")).default : null;
+      const executablePath = chromium
+        ? await chromium.executablePath()
+        : process.env.PUPPETEER_EXECUTABLE_PATH || await ((await import("puppeteer")).default.executablePath());
       browser = await puppeteer.launch({
         headless: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+        executablePath,
         userDataDir,
         env: {
           ...process.env,
@@ -52,6 +59,7 @@ export async function POST(req: NextRequest) {
           XDG_CACHE_HOME: tmpdir(),
         },
         args: [
+          ...(chromium?.args || []),
           "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
           "--disable-gpu", "--disable-crash-reporter", "--disable-crashpad",
           "--disable-breakpad", `--crash-dumps-dir=${crashDumpsDir}`, "--no-zygote",
