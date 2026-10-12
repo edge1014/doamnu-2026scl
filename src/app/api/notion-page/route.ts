@@ -9,6 +9,7 @@ import {
   verifyProfessorPermission,
 } from "@/lib/notion";
 import { isReadOnlySemester, normalizeSemester } from "@/lib/semester";
+import { combineEvaluationsForSessionDate } from "@/lib/session-progress";
 
 export async function POST(req: NextRequest) {
   // 1. 인증 확인 (교수 로그인 필요)
@@ -42,21 +43,28 @@ export async function POST(req: NextRequest) {
     if (!targetSession) {
       return NextResponse.json({ error: "세션을 찾을 수 없습니다." }, { status: 404 });
     }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(targetSession.date.slice(0, 10))) {
+      return NextResponse.json({ error: "세션의 수업 날짜가 올바르지 않습니다." }, { status: 400 });
+    }
 
-    // 4. 전체 학생 목록 조회 (DB1)
-    const students = await fetchStudents(semester);
+    // 평가 입력일이 아닌 수업 날짜를 기준으로 두 분반을 한 일지에 묶는다.
+    const daySessions = sessions.filter((item) => item.date.slice(0, 10) === targetSession.date.slice(0, 10));
+    const orderedSessions = [targetSession, ...daySessions.filter((item) => item.id !== targetSession.id)];
+    const [students, ...evaluationMaps] = await Promise.all([
+      fetchStudents(semester),
+      ...orderedSessions.map((item) => fetchEvaluationsBySession(item.id, semester)),
+    ]);
+    const evaluations = combineEvaluationsForSessionDate(
+      targetSession.id,
+      orderedSessions.map((item, index) => ({ session: item, evaluations: evaluationMaps[index] })),
+      students,
+      semester === "2026-2"
+    );
 
-    // 5. 해당 세션의 평가 전체 조회 (DB3)
-    const evaluations = await fetchEvaluationsBySession(sessionId, semester);
-
-    // 6. Notion 페이지 생성 (기존 블록 삭제 후 재작성)
     const result = await generateNotionPage({
-      sessionPageId: sessionId,
-      sessionName: targetSession.sessionName,
-      description: targetSession.description,
-      division: targetSession.division,
-      overallClass1: targetSession.overallClass1,
-      overallClass2: targetSession.overallClass2,
+      semester,
+      date: targetSession.date.slice(0, 10),
+      sessions: daySessions,
       students,
       evaluations,
     });
@@ -68,7 +76,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       url: result.url,
-      message: `"${targetSession.sessionName}" Notion 수업 페이지가 생성되었습니다.`,
+      message: `${targetSession.date.slice(0, 10)} 수업 일지가 학기 페이지에 생성·갱신되었습니다.`,
     });
   } catch (error: any) {
     console.error("Notion page generation error:", error);

@@ -4,6 +4,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
 import Link from "next/link";
 import { DEFAULT_SEMESTER, normalizeSemester, type SemesterKey } from "@/lib/semester";
+import { combineEvaluationsForSessionDate } from "@/lib/session-progress";
+import { saveHealthReports } from "@/lib/health-report-download";
 import { 
   LogOut, 
   BookOpen, 
@@ -64,6 +66,7 @@ export default function Home() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedSemester, setSelectedSemester] = useState<SemesterKey>(DEFAULT_SEMESTER);
   const [evalMap, setEvalMap] = useState<Record<string, Evaluation>>({});
+  const [dateEvalMap, setDateEvalMap] = useState<Record<string, Evaluation>>({});
   const [loading, setLoading] = useState(true);
   const [evalsLoading, setEvalsLoading] = useState(false);
 
@@ -115,7 +118,7 @@ export default function Home() {
   // Score & Critic States
   const [score, setScore] = useState(7);
   const [critic, setCritic] = useState("");
-  const [uploadingImage, setUploadingImage] = useState(false);
+  const [pendingImageFile, setPendingImageFile] = useState<File | null>(null);
   const [currentImageUrl, setCurrentImageUrl] = useState("");
   const [toastMessage, setToastMessage] = useState("");
   const [toastShow, setToastShow] = useState(false);
@@ -129,7 +132,10 @@ export default function Home() {
 
   const evalPanelRef = useRef<HTMLDivElement>(null);
   const isReadOnly = selectedSemester === "2026-1";
-  const overallDivision: "1분반" | "2분반" = selectedProfessor === "김태훈" ? "1분반" : "2분반";
+  const activeSessionDivision = sessions.find((session) => session.id === currentSessionId)?.division;
+  const overallDivision: "1분반" | "2분반" = selectedSemester === "2026-2" && currentFilter !== "all"
+    ? currentFilter
+    : activeSessionDivision || (selectedProfessor === "김태훈" ? "1분반" : "2분반");
   const sessionDivision = selectedSemester === "2026-2" && currentFilter !== "all" ? currentFilter : null;
   const visibleSessions = sessionDivision
     ? sessions.filter((session) => session.division === sessionDivision)
@@ -176,6 +182,7 @@ export default function Home() {
       setStudents([]);
       setSessions([]);
       setEvalMap({});
+      setDateEvalMap({});
       setCurrentSessionId("");
       setOverallText("");
       setSelectedStudent(null);
@@ -232,7 +239,7 @@ export default function Home() {
     }
   }, [status, selectedSemester]);
 
-  // 2학기는 분반별 독립 세션을 사용한다. 학생 목록 분반을 바꾸면 해당 분반의 최근 세션으로 전환한다.
+  // 분반을 바꿔도 현재 보고 있던 수업 날짜를 유지한다.
   useEffect(() => {
     if (!sessionDivision) return;
     const matchingSessions = sessions.filter((session) => session.division === sessionDivision);
@@ -241,27 +248,55 @@ export default function Home() {
       return;
     }
     if (!matchingSessions.some((session) => session.id === currentSessionId)) {
-      setCurrentSessionId(matchingSessions[0].id);
+      const currentDate = sessions.find((session) => session.id === currentSessionId)?.date;
+      const sameDateSession = matchingSessions.find((session) => session.date === currentDate);
+      setCurrentSessionId((sameDateSession || matchingSessions[0]).id);
     }
   }, [sessionDivision, sessions, currentSessionId]);
 
-  // 3. Fetch Evaluations when Session Changes
+  // 같은 수업 날짜의 분반별 세션을 함께 읽는다. 평가 입력일은 집계 기준으로 쓰지 않는다.
   useEffect(() => {
-    if (currentSessionId) {
-      setEvalsLoading(true);
-      fetch(`/api/evals?sessionId=${currentSessionId}&semester=${selectedSemester}`)
-        .then((res) => res.json())
-        .then((data) => {
-          setEvalMap(data);
-          setEvalsLoading(false);
-          setSelectedStudent(null);
-        })
-        .catch((err) => {
-          console.error("Failed to load evaluations:", err);
-          setEvalsLoading(false);
-        });
+    const selectedSession = sessions.find((session) => session.id === currentSessionId);
+    if (!selectedSession) {
+      setEvalMap({});
+      setDateEvalMap({});
+      setEvalsLoading(false);
+      return;
     }
-  }, [currentSessionId, selectedSemester]);
+
+    const controller = new AbortController();
+    const sameDateSessions = sessions.filter((session) => session.date === selectedSession.date);
+    const orderedSessions = [selectedSession, ...sameDateSessions.filter((session) => session.id !== currentSessionId)];
+    setEvalsLoading(true);
+    setEvalMap({});
+    setDateEvalMap({});
+
+    Promise.all(orderedSessions.map(async (session) => {
+      const response = await fetch(`/api/evals?sessionId=${session.id}&semester=${selectedSemester}`, {
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("평가 기록을 불러오지 못했습니다.");
+      return { session, evaluations: await response.json() as Record<string, Evaluation> };
+    }))
+      .then((results) => {
+        if (controller.signal.aborted) return;
+        setEvalMap(results[0].evaluations);
+        setDateEvalMap(combineEvaluationsForSessionDate(
+          currentSessionId,
+          results,
+          students,
+          selectedSemester === "2026-2"
+        ));
+        setEvalsLoading(false);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        console.error("Failed to load evaluations:", error);
+        setEvalsLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [currentSessionId, selectedSemester, sessions, students]);
 
   // 현재 로그인/선택 교수의 담당 분반 총평을 세션별로 불러온다.
   useEffect(() => {
@@ -345,7 +380,7 @@ export default function Home() {
       });
       const data = await res.json();
       if (res.ok && data.success && data.session) {
-        showToast("수업 세션이 생성되었습니다!");
+        showToast("수업 세션이 Notion에 생성되었습니다!");
         
         const created: Session = data.session;
         setSessions(prev => [created, ...prev]);
@@ -369,8 +404,25 @@ export default function Home() {
 
   // Select a student for evaluation
   const handleSelectStudent = (student: Student) => {
+    const selectedSession = sessions.find((session) => session.id === currentSessionId);
+    const classSession = currentFilter === "all" && selectedSemester === "2026-2"
+      ? sessions.find((session) => session.date === selectedSession?.date && session.division === student.cls)
+      : undefined;
+    if (selectedSemester === "2026-2" && currentFilter === "all" && !classSession) {
+      showToast(`${student.cls}의 해당 날짜 수업 세션을 먼저 만들어 주세요.`);
+      return;
+    }
+    if (selectedSemester === "2026-2" && currentFilter !== "all" && selectedSession?.division !== student.cls) {
+      return;
+    }
+    if (currentImageUrl.startsWith("blob:")) URL.revokeObjectURL(currentImageUrl);
+    setPendingImageFile(null);
     setSelectedStudent(student);
-    const existingEval = evalMap[student.id];
+    if (classSession) setCurrentFilter(student.cls);
+    if (classSession && classSession.id !== currentSessionId) setCurrentSessionId(classSession.id);
+    const existingEval = classSession && classSession.id !== currentSessionId
+      ? dateEvalMap[student.id]
+      : evalMap[student.id];
     if (existingEval) {
       setScore(existingEval.score);
       setCritic(existingEval.critic || "");
@@ -387,8 +439,8 @@ export default function Home() {
     }, 100);
   };
 
-  // Image Upload handler
-  const handleImageFile = async (file: File) => {
+  // Keep the selected image locally until the evaluation is saved.
+  const handleImageFile = (file: File) => {
     if (isReadOnly) return;
     if (!selectedStudent) {
       showToast("학생을 먼저 선택해 주세요.");
@@ -398,35 +450,14 @@ export default function Home() {
       showToast("이미지 파일만 업로드할 수 있습니다.");
       return;
     }
-    setUploadingImage(true);
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("studentName", selectedStudent.name);
-    formData.append("studentOrder", String(selectedStudent.order));
-    formData.append("studentCls", selectedStudent.cls);
-    const sessionObj = sessions.find((s) => s.id === currentSessionId);
-    if (sessionObj) {
-      formData.append("sessionDate", sessionObj.date);
+    if (file.size > 20 * 1024 * 1024) {
+      showToast("20MB 이하의 이미지를 선택해 주세요.");
+      return;
     }
-
-    try {
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
-      if (data.imageUrl) {
-        setCurrentImageUrl(data.imageUrl);
-        showToast("이미지 업로드 완료!");
-      } else {
-        throw new Error(data.error || "업로드 실패");
-      }
-    } catch (e: any) {
-      console.error(e);
-      showToast(`업로드 실패: ${e.message}`);
-    } finally {
-      setUploadingImage(false);
-    }
+    if (currentImageUrl.startsWith("blob:")) URL.revokeObjectURL(currentImageUrl);
+    setPendingImageFile(file);
+    setCurrentImageUrl(URL.createObjectURL(file));
+    showToast("이미지가 선택되었습니다. 평가 저장을 누르면 Notion에 함께 저장됩니다.");
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -440,29 +471,30 @@ export default function Home() {
   // Save current student evaluation
   const handleSaveEval = async () => {
     if (isReadOnly) return;
+    if (evalsLoading) return;
     if (!selectedStudent || !currentSessionId) return;
     const sessionObj = sessions.find((s) => s.id === currentSessionId);
     if (!sessionObj) return;
+    if (selectedSemester === "2026-2" && sessionObj.division !== selectedStudent.cls) {
+      showToast("학생 분반과 수업 세션의 분반이 다릅니다.");
+      return;
+    }
 
     const btn = document.getElementById("save-btn") as HTMLButtonElement;
     if (btn) btn.disabled = true;
 
     try {
-      const res = await fetch("/api/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          studentPageId: selectedStudent.id,
-          studentName: selectedStudent.name,
-          sessionPageId: currentSessionId,
-          sessionName: sessionObj.sessionName,
-          professor: selectedProfessor,
-          score,
-          critic,
-          imageUrl: currentImageUrl,
-          semester: selectedSemester,
-        }),
-      });
+      const formData = new FormData();
+      formData.set("studentPageId", selectedStudent.id);
+      formData.set("studentName", selectedStudent.name);
+      formData.set("sessionPageId", currentSessionId);
+      formData.set("sessionName", sessionObj.sessionName);
+      formData.set("professor", selectedProfessor);
+      formData.set("score", String(score));
+      formData.set("critic", critic);
+      formData.set("semester", selectedSemester);
+      if (pendingImageFile) formData.set("image", pendingImageFile);
+      const res = await fetch("/api/save", { method: "POST", body: formData });
 
       const data = await res.json();
       if (res.ok && data.success) {
@@ -470,7 +502,13 @@ export default function Home() {
           ...prev,
           [selectedStudent.id]: data.evaluation,
         }));
+        setDateEvalMap((prev) => ({
+          ...prev,
+          [selectedStudent.id]: data.evaluation,
+        }));
         showToast(`${selectedStudent.name} 평가 저장 완료!`);
+        if (currentImageUrl.startsWith("blob:")) URL.revokeObjectURL(currentImageUrl);
+        setPendingImageFile(null);
         setSelectedStudent(null);
       } else {
         throw new Error(data.error || "저장 실패");
@@ -525,11 +563,11 @@ export default function Home() {
     }
   };
 
-  // Notion 수업 페이지 자동 생성
+  // 선택한 수업 날짜의 두 분반을 학기 메인페이지의 한 일지로 반영
   const handleGenerateNotionPage = async () => {
     if (isReadOnly) return;
     if (!currentSessionId) {
-      showToast("먼저 수업 세션을 선택해 주세요.");
+      showToast("먼저 수업 날짜의 세션을 선택해 주세요.");
       return;
     }
     setShowSettingsDropdown(false);
@@ -542,7 +580,7 @@ export default function Home() {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        showToast(data.message || "Notion 수업 페이지 생성 완료!");
+        showToast(data.message || "Notion 수업 일지 반영 완료!");
         if (data.url) {
           window.open(data.url, "_blank", "noopener,noreferrer");
         }
@@ -551,85 +589,36 @@ export default function Home() {
       }
     } catch (e: any) {
       console.error(e);
-      showToast(`Notion 페이지 생성 실패: ${e.message}`);
+      showToast(`Notion 수업 일지 반영 실패: ${e.message}`);
     } finally {
       setNotionPageGenerating(false);
     }
   };
 
-  // PDF Bulk Export to Google Drive Function
+  // 학생별 누적 크리틱 보드를 교수 컴퓨터의 폴더에 저장한다.
   const handleBulkExportPdf = async () => {
-    if (!currentSessionId) return;
-    const sessionObj = sessions.find((s) => s.id === currentSessionId);
-    if (!sessionObj) return;
-
-    // Get all evaluated students in the current session
-    const evaluatedList = students.filter((s) => !!evalMap[s.id]);
-    if (evaluatedList.length === 0) {
-      showToast("평가된 학생이 없습니다.");
+    if (students.length === 0) {
+      showToast("저장할 학생이 없습니다.");
       return;
     }
-
     setExportingPdf(true);
     setExportProgress(0);
-    setExportTotal(evaluatedList.length);
-    setExportCurrentName("구글 드라이브 폴더 생성 중...");
-
+    setExportTotal(students.length);
+    setExportCurrentName("학생 크리틱 대시보드 PDF 준비 중...");
     try {
-      // 1. Create or retrieve folder in Google Drive
-      const folderRes = await fetch("/api/export-pdf", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "create_folder",
-          sessionName: sessionObj.sessionName,
-          semester: selectedSemester,
-        }),
+      const result = await saveHealthReports(students, selectedSemester, (completed, total, message) => {
+        setExportProgress(completed);
+        setExportTotal(total);
+        setExportCurrentName(message);
       });
-      const folderData = await folderRes.json();
-      if (!folderData.folderId) {
-        throw new Error(folderData.error || "폴더를 생성할 수 없습니다.");
-      }
-
-      const folderId = folderData.folderId;
-
-      const failedExports: string[] = [];
-
-      // 2. Export each student one by one
-      for (let i = 0; i < evaluatedList.length; i++) {
-        const student = evaluatedList[i];
-        setExportCurrentName(`${student.name} (${i + 1}/${evaluatedList.length}) PDF 생성 중...`);
-        
-        const exportRes = await fetch("/api/export-pdf", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "export_pdf",
-            studentId: student.id,
-            studentName: student.name,
-            folderId: folderId,
-            semester: selectedSemester,
-          }),
-        });
-
-        const exportData = await exportRes.json();
-        if (!exportRes.ok || exportData.error) {
-          const reason = exportData.error || `HTTP ${exportRes.status}`;
-          failedExports.push(`${student.name}: ${reason}`);
-          console.error(`Failed to export ${student.name}:`, reason);
-        }
-        
-        setExportProgress(i + 1);
-      }
-
-      if (failedExports.length > 0) {
-        throw new Error(`${failedExports.length}명 PDF 생성 실패 — ${failedExports.slice(0, 3).join(" / ")}`);
-      }
-
-      showToast("구글 드라이브에 PDF 전체 업로드 완료!");
-    } catch (e: any) {
-      console.error(e);
-      showToast(`내보내기 실패: ${e.message}`);
+      if (result.cancelled) showToast("PDF 저장을 취소했습니다.");
+      else if (result.saved === 0) showToast(`PDF 생성 실패: ${result.failures.slice(0, 2).join(" / ")}`);
+      else showToast(result.failures.length > 0
+        ? `${result.saved}명 저장, ${result.failures.length}명 실패: ${result.failures.slice(0, 2).join(" / ")}`
+        : `${result.saved}명의 학생 크리틱 대시보드 PDF를 ${result.destination === "folder" ? "선택한 폴더" : "ZIP 파일"}에 저장했습니다.`);
+    } catch (error) {
+      console.error(error);
+      showToast(`학생 크리틱 대시보드 저장 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
     } finally {
       setExportingPdf(false);
     }
@@ -681,8 +670,13 @@ export default function Home() {
     return s.cls === currentFilter;
   });
 
-  const evaluatedCount = students.filter((s) => !!evalMap[s.id]).length;
+  const evaluatedCount = students.filter((s) => !!dateEvalMap[s.id]).length;
   const progressPercent = students.length > 0 ? Math.round((evaluatedCount / students.length) * 100) : 0;
+  const class1Students = students.filter((student) => student.cls === "1분반");
+  const class2Students = students.filter((student) => student.cls === "2분반");
+  const class1Evaluated = class1Students.filter((student) => !!dateEvalMap[student.id]).length;
+  const class2Evaluated = class2Students.filter((student) => !!dateEvalMap[student.id]).length;
+  const selectedDate = sessions.find((session) => session.id === currentSessionId)?.date;
 
   return (
     <div style={{ maxWidth: "800px", margin: "0 auto", padding: "24px 16px 60px" }} className="animated-fade-in">
@@ -759,7 +753,7 @@ export default function Home() {
                 {/* 구분선 */}
                 <div style={{ height: "1px", background: "var(--border-subtle)", margin: "2px 4px" }} />
 
-                {/* Notion 수업 페이지 생성 */}
+                {/* Notion 학기별 수업 일지 생성·갱신 */}
                 <button
                   id="settings-notion-page"
                   onClick={handleGenerateNotionPage}
@@ -787,13 +781,13 @@ export default function Home() {
                   ) : (
                     <FileText style={{ width: "15px", height: "15px", color: "var(--primary)", flexShrink: 0 }} />
                   )}
-                  {notionPageGenerating ? "Notion 페이지 생성 중..." : "Notion 수업 페이지 생성"}
+                  {notionPageGenerating ? "Notion 수업 일지 반영 중..." : "Notion 수업 일지 생성·갱신"}
                 </button>
 
                 {/* 구분선 */}
                 <div style={{ height: "1px", background: "var(--border-subtle)", margin: "2px 4px" }} />
 
-                {/* PDF 일괄 생성 */}
+                {/* 학생 크리틱 대시보드 일괄 저장 */}
                 <button
                   id="settings-pdf-export"
                   onClick={() => { setShowSettingsDropdown(false); handleBulkExportPdf(); }}
@@ -816,7 +810,7 @@ export default function Home() {
                   onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                 >
                   <Download style={{ width: "15px", height: "15px", color: "var(--text-muted)", flexShrink: 0 }} />
-                  오늘 수업 PDF 일괄 생성
+                  학생 크리틱 대시보드 일괄 저장
                 </button>
               </div>
             )}
@@ -875,7 +869,7 @@ export default function Home() {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
           <div>
             <label>수업 날짜 / 세션 {sessionDivision ? `(${sessionDivision})` : ""}</label>
-            <select value={currentSessionId} onChange={(e) => setCurrentSessionId(e.target.value)}>
+            <select value={currentSessionId} onChange={(e) => { setSelectedStudent(null); setCurrentSessionId(e.target.value); }}>
               {visibleSessions.length === 0 && <option value="">선택된 분반의 세션이 없습니다.</option>}
               {visibleSessions.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -923,21 +917,21 @@ export default function Home() {
           
           <div style={{ display: "flex", gap: "6px" }}>
             <button 
-              onClick={() => setCurrentFilter("1분반")} 
+              onClick={() => { setSelectedStudent(null); setCurrentFilter("1분반"); }}
               className="btn" 
               style={{ padding: "4px 12px", borderRadius: "15px", fontSize: "11px", background: currentFilter === "1분반" ? "var(--primary)" : "transparent", color: currentFilter === "1분반" ? "#fff" : "var(--text-main)", border: "1px solid var(--border-subtle)" }}
             >
               1분반
             </button>
             <button 
-              onClick={() => setCurrentFilter("2분반")} 
+              onClick={() => { setSelectedStudent(null); setCurrentFilter("2분반"); }}
               className="btn" 
               style={{ padding: "4px 12px", borderRadius: "15px", fontSize: "11px", background: currentFilter === "2분반" ? "var(--primary)" : "transparent", color: currentFilter === "2분반" ? "#fff" : "var(--text-main)", border: "1px solid var(--border-subtle)" }}
             >
               2분반
             </button>
             <button 
-              onClick={() => setCurrentFilter("all")} 
+              onClick={() => { setSelectedStudent(null); setCurrentFilter("all"); }}
               className="btn" 
               style={{ padding: "4px 12px", borderRadius: "15px", fontSize: "11px", background: currentFilter === "all" ? "var(--primary)" : "transparent", color: currentFilter === "all" ? "#fff" : "var(--text-main)", border: "1px solid var(--border-subtle)" }}
             >
@@ -952,14 +946,19 @@ export default function Home() {
             <div style={{ width: `${progressPercent}%`, height: "100%", background: "var(--success)", borderRadius: "3px", transition: "width 0.4s ease" }} />
           </div>
           <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
-            {evaluatedCount} / {students.length} 평가 완료 ({progressPercent}%)
+            {evalsLoading ? "같은 날짜 평가 집계 중..." : `${selectedDate ? selectedDate.slice(5).replace("-", "/") : "선택 날짜"} 전체 ${evaluatedCount} / ${students.length} 평가 완료 (${progressPercent}%)`}
           </span>
         </div>
+        {!evalsLoading && selectedSemester === "2026-2" && currentSessionId && (
+          <div style={{ marginTop: "-12px", marginBottom: "16px", fontSize: "11px", color: "var(--text-muted)" }}>
+            1분반 {class1Evaluated}/{class1Students.length} · 2분반 {class2Evaluated}/{class2Students.length} · 수업 날짜 기준
+          </div>
+        )}
 
         {/* PDF & Notion hint — moved to ⚙️ settings dropdown */}
         <div style={{ marginBottom: "8px", fontSize: "11px", color: "var(--text-light)", display: "flex", alignItems: "center", gap: "5px" }}>
           <Settings style={{ width: "11px", height: "11px" }} />
-          PDF 일괄 생성·Notion 수업 페이지 생성은 우상단 ⚙️ 설정에서 할 수 있습니다.
+          학생 크리틱 대시보드 저장·Notion 수업 일지 생성은 우상단 ⚙️ 설정에서 할 수 있습니다.
         </div>
 
         {/* Students list loading spinner */}
@@ -970,7 +969,7 @@ export default function Home() {
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "8px" }}>
             {filteredStudents.map((st) => {
-              const ev = evalMap[st.id];
+              const ev = currentFilter === "all" ? dateEvalMap[st.id] : evalMap[st.id];
               const isSelected = selectedStudent?.id === st.id;
               
               let cardClass = "student-card-wrapper";
@@ -1071,7 +1070,7 @@ export default function Home() {
             />
           </div>
 
-          {/* GCS Drag and Drop Upload */}
+          {/* Student work screenshot upload */}
           <div style={{ marginBottom: "16px" }}>
             <label>과제물 대표 이미지</label>
             <div 
@@ -1083,14 +1082,9 @@ export default function Home() {
               onClick={() => !isReadOnly && document.getElementById("file-input")?.click()}
               style={{ opacity: isReadOnly ? 0.65 : 1, cursor: isReadOnly ? "default" : "pointer" }}
             >
-              {uploadingImage ? (
-                <>
-                  <Loader2 className="animated-spin" style={{ width: "24px", height: "24px", color: "var(--primary)", animation: "spin 1s linear infinite" }} />
-                  <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>업로드 중...</span>
-                </>
-              ) : currentImageUrl ? (
+              {currentImageUrl ? (
                 <div style={{ position: "relative", width: "100%", maxHeight: "160px", overflow: "hidden", borderRadius: "8px" }}>
-                  <img src={currentImageUrl} alt="uploaded work" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <img src={currentImageUrl} alt="학생 과제물 대표 이미지" style={{ width: "100%", maxHeight: "160px", objectFit: "contain" }} />
                   <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", opacity: 0, transition: "opacity 0.2s" }} onMouseEnter={(e) => e.currentTarget.style.opacity = "1"} onMouseLeave={(e) => e.currentTarget.style.opacity = "0"}>
                     <Upload style={{ width: "20px", height: "20px" }} />
                     <span style={{ fontSize: "11px", marginLeft: "6px" }}>이미지 변경</span>
@@ -1100,7 +1094,7 @@ export default function Home() {
                 <>
                   <Upload style={{ width: "28px", height: "28px" }} />
                   <span style={{ fontSize: "13px", fontWeight: 500 }}>과제물 이미지 업로드 (클릭 또는 드래그)</span>
-                  <span style={{ fontSize: "11px", color: "var(--text-light)" }}>Google Cloud Storage에 안전하게 저장됩니다.</span>
+                  <span style={{ fontSize: "11px", color: "var(--text-light)" }}>평가 저장 시 가로 최대 800픽셀 JPG로 변환해 Notion에 함께 저장합니다.</span>
                 </>
               )}
             </div>
@@ -1110,7 +1104,10 @@ export default function Home() {
               accept="image/*" 
               disabled={isReadOnly}
               style={{ display: "none" }} 
-              onChange={(e) => e.target.files && handleImageFile(e.target.files[0])}
+              onChange={(e) => {
+                if (e.target.files?.[0]) handleImageFile(e.target.files[0]);
+                e.target.value = "";
+              }}
             />
           </div>
 
@@ -1121,7 +1118,7 @@ export default function Home() {
               value={critic}
               onChange={(e) => setCritic(e.target.value)}
               readOnly={isReadOnly}
-              placeholder="학생 개인별 크리틱 피드백을 입력하세요. AI 조언은 학생 보드에서 필요할 때 별도로 생성할 수 있습니다."
+              placeholder="학생 개인별 크리틱 피드백을 입력하세요. AI 젠지 조언은 학생 크리틱 대시보드 PDF를 만들 때 생성됩니다."
               style={{ minHeight: "150px" }}
             />
             <div style={{ display: "flex", alignItems: "center", gap: "4px", marginTop: "6px" }}>
@@ -1144,10 +1141,14 @@ export default function Home() {
               </a>
             ) : <div />}
             <div style={{ display: "flex", gap: "8px" }}>
-              <button onClick={() => setSelectedStudent(null)} className="btn btn-secondary">
+              <button onClick={() => {
+                if (currentImageUrl.startsWith("blob:")) URL.revokeObjectURL(currentImageUrl);
+                setPendingImageFile(null);
+                setSelectedStudent(null);
+              }} className="btn btn-secondary">
                 취소
               </button>
-              <button onClick={handleSaveEval} disabled={isReadOnly} id="save-btn" className="btn btn-primary" style={{ gap: "6px", opacity: isReadOnly ? 0.5 : 1 }}>
+              <button onClick={handleSaveEval} disabled={isReadOnly || evalsLoading} id="save-btn" className="btn btn-primary" style={{ gap: "6px", opacity: isReadOnly || evalsLoading ? 0.5 : 1 }}>
                 <Sparkles style={{ width: "15px", height: "15px" }} />
                 평가 저장
               </button>
@@ -1166,7 +1167,7 @@ export default function Home() {
         <div style={{ position: "fixed", inset: 0, background: "rgba(0, 0, 0, 0.6)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} className="no-print">
           <div className="glass-card" style={{ width: "100%", maxWidth: "380px", textAlign: "center", padding: "30px 24px" }}>
             <Loader2 className="animated-spin" style={{ width: "36px", height: "36px", color: "var(--primary)", margin: "0 auto 16px", animation: "spin 1s linear infinite" }} />
-            <h4 style={{ fontSize: "16px", marginBottom: "8px", fontWeight: 700 }}>구글 드라이브 PDF 일괄 내보내기</h4>
+            <h4 style={{ fontSize: "16px", marginBottom: "8px", fontWeight: 700 }}>학생 크리틱 대시보드 저장</h4>
             <p style={{ fontSize: "13px", color: "var(--text-muted)", marginBottom: "20px" }}>{exportCurrentName}</p>
             
             {/* Progress bar inside modal */}
@@ -1313,10 +1314,11 @@ export default function Home() {
                 <input 
                   type="text" 
                   required
-                  placeholder="예: 0524 대안크리틱 - 평면 레이아웃"
+                  placeholder="예: 두번째 프로젝트 오리엔테이션"
                   value={newSessionName} 
                   onChange={(e) => setNewSessionName(e.target.value)}
                 />
+                <span style={{ fontSize: "11px", color: "var(--text-light)" }}>선택한 수업 날짜의 월일이 세션명 앞에 자동으로 붙습니다. 생성일과는 관계없습니다.</span>
               </div>
 
               <div>

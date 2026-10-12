@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import Link from "next/link";
 import { normalizeSemester } from "@/lib/semester";
+import { downloadSingleHealthReport, saveHealthReports } from "@/lib/health-report-download";
+import { isWithinRecentClassDays } from "@/lib/report-date";
 import { Chart, registerables } from "chart.js";
 import { 
   Loader2, 
@@ -70,7 +72,6 @@ function StudentBoardContent() {
   const router = useRouter();
   const studentParamId = searchParams.get("student") || "";
   const selectedSemester = normalizeSemester(searchParams.get("semester"));
-  const isReadOnly = selectedSemester === "2026-1";
   const pdfMode = searchParams.get("pdfMode") === "true";
 
   const [darkMode, setDarkMode] = useState(false);
@@ -84,8 +85,10 @@ function StudentBoardContent() {
   const urlPeriod = searchParams.get("period");
   const [period, setPeriod] = useState(urlPeriod || "3w"); // Default to '3w'
   const urlHistoryPeriod = searchParams.get("historyPeriod");
-  const [historyPeriod, setHistoryPeriod] = useState(urlHistoryPeriod || "2w"); // Default to '2w'
+  const [historyPeriod, setHistoryPeriod] = useState(urlHistoryPeriod || (pdfMode ? "3w" : "2w"));
   const [aiAdvice, setAiAdvice] = useState<string>("");
+  const [aiAdviceDate, setAiAdviceDate] = useState("");
+  const [chartReady, setChartReady] = useState(false);
   const [isRegistered, setIsRegistered] = useState(false);
   
   // UI States
@@ -100,11 +103,9 @@ function StudentBoardContent() {
   const [selectedDivision, setSelectedDivision] = useState<"1분반" | "2분반">("1분반");
 
   // Single Action Processing States
-  const [singleAdviceGenerating, setSingleAdviceGenerating] = useState(false);
   const [exportStatus, setExportStatus] = useState({ loading: false, targetId: "" });
 
   // Bulk Action Processing States
-  const [bulkAdviceStatus, setBulkAdviceStatus] = useState({ loading: false, progress: 0, total: 0, message: "" });
   const [bulkPdfStatus, setBulkPdfStatus] = useState({ loading: false, progress: 0, total: 0, message: "" });
 
   // Toast States
@@ -185,9 +186,10 @@ function StudentBoardContent() {
           setAllRecords(records);
           if (records.length > 0) {
             const latestRecord = records[records.length - 1];
-            loadAdvice(matched.id, latestRecord.date); // Use matched.id directly to avoid React state lag!
+            if (pdfMode) loadAdvice(matched.id, latestRecord.date);
           } else {
             setAiAdvice("");
+            setAiAdviceDate("");
           }
         }
         setLoading(false);
@@ -203,250 +205,58 @@ function StudentBoardContent() {
   // Load AI advice from Notion DB4
   const loadAdvice = (sId: string, latestDate: string) => {
     if (!sId) return;
+    const injected = (window as Window & { __SCL_REPORT_ADVICE__?: string }).__SCL_REPORT_ADVICE__;
+    if (pdfMode && typeof injected === "string") {
+      setAiAdvice(injected);
+      setAdviceLoading(false);
+      return;
+    }
     setAdviceLoading(true);
     fetch(`/api/advice?studentId=${sId}&latestDate=${latestDate}&semester=${selectedSemester}`)
       .then((res) => res.json())
       .then((data) => {
         setAiAdvice(data.advice || "");
+        setAiAdviceDate(data.date || "");
         setAdviceLoading(false);
       })
       .catch((err) => {
         console.error(err);
+        setAiAdviceDate("");
         setAdviceLoading(false);
       });
   };
 
-  // Generate individual AI Advice manually
-  const generateSingleAdvice = async () => {
-    if (isReadOnly) return;
-    if (!student || allRecords.length === 0) return;
-    const latestRecord = allRecords[allRecords.length - 1];
-    const sessionObj = sessions.find((s) => s.id === latestRecord.sessionPageId);
-
-    setSingleAdviceGenerating(true);
-    try {
-      const res = await fetch("/api/advice", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          studentId: student.id,
-          studentName: student.name,
-          critic: latestRecord.critic,
-          score: latestRecord.score,
-          sessionName: sessionObj?.sessionName || "건축설계 세션",
-          semester: selectedSemester,
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setAiAdvice(data.advice);
-        showToast("AI 조언 생성이 완료되었습니다!");
-      } else {
-        throw new Error(data.error || "생성 실패");
-      }
-    } catch (e: any) {
-      console.error(e);
-      showToast(`AI 조언 생성 실패: ${e.message}`);
-    } finally {
-      setSingleAdviceGenerating(false);
-    }
-  };
-
-  // Export current student's dashboard to PDF
+  // PDF 버튼을 누를 때만 AI 조언을 새로 생성하고 학생 크리틱 대시보드에 담는다.
   const exportSinglePdf = async () => {
     if (!student) return;
-    const latestRecord = allRecords.length > 0 ? allRecords[allRecords.length - 1] : null;
-    let sessionObj = latestRecord ? sessions.find((s) => s.id === latestRecord.sessionPageId) : null;
-    if (!sessionObj && sessions.length > 0) {
-      sessionObj = sessions[0];
-    }
-    if (!sessionObj) {
-      showToast("세션 정보를 찾을 수 없습니다.");
-      return;
-    }
-
     setExportStatus({ loading: true, targetId: student.id });
     try {
-      // 1. Create Google Drive folder for this session
-      const folderRes = await fetch("/api/export-pdf", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "create_folder",
-          sessionName: sessionObj.sessionName,
-          semester: selectedSemester,
-        }),
-      });
-      const folderData = await folderRes.json();
-      if (!folderRes.ok || !folderData.folderId) {
-        throw new Error(folderData.error || "구글 드라이브 폴더 생성 실패");
-      }
-
-      // 2. Render PDF and upload
-      const pdfRes = await fetch("/api/export-pdf", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "export_pdf",
-          studentId: student.id,
-          studentName: student.name,
-          folderId: folderData.folderId,
-          period: period,
-          historyPeriod: historyPeriod,
-          semester: selectedSemester,
-        }),
-      });
-      const pdfData = await pdfRes.json();
-      if (pdfRes.ok && pdfData.success) {
-        showToast(`${student.name} 학생의 PDF가 구글 드라이브에 업로드되었습니다.`);
-      } else {
-        throw new Error(pdfData.error || "PDF 생성 실패");
-      }
-    } catch (e: any) {
-      console.error(e);
-      showToast(`내보내기 실패: ${e.message}`);
+      await downloadSingleHealthReport(student, selectedSemester);
+      showToast(`${student.name} 학생 크리틱 대시보드 PDF를 다운로드했습니다.`);
+    } catch (error) {
+      console.error(error);
+      showToast(`PDF 생성 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
     } finally {
       setExportStatus({ loading: false, targetId: "" });
     }
   };
 
-  // Bulk Generate AI advice for all students in the selected division
-  const bulkGenerateAdvice = async () => {
-    if (isReadOnly) return;
-    const listToGenerate = students.filter(s => s.cls === selectedDivision);
-    if (listToGenerate.length === 0) return;
-
-    if (!confirm(`${selectedDivision} 학생 ${listToGenerate.length}명에 대한 AI 조언 생성을 시작하시겠습니까?\n(OpenRouter API 호출이 순차적으로 진행되며 선불 잔액이 사용됩니다.)`)) {
-      return;
-    }
-
-    setBulkAdviceStatus({ loading: true, progress: 0, total: listToGenerate.length, message: "AI 조언 일괄 생성 시작 중..." });
-
-    try {
-      for (let i = 0; i < listToGenerate.length; i++) {
-        const currentStudent = listToGenerate[i];
-        setBulkAdviceStatus(prev => ({ ...prev, progress: i + 1, message: `${currentStudent.name} AI 조언 생성 중...` }));
-
-        // Fetch evaluations for this student
-        const recordsRes = await fetch(`/api/scl?studentId=${currentStudent.id}&semester=${selectedSemester}`);
-        const records = await recordsRes.json();
-        
-        if (records && records.length > 0) {
-          const latestRecord = records[records.length - 1];
-          let matchedSession = sessions.find(s => s.id === latestRecord.sessionPageId);
-          if (!matchedSession && sessions.length > 0) {
-            matchedSession = sessions[0];
-          }
-
-          const adviceRes = await fetch("/api/advice", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              studentId: currentStudent.id,
-              studentName: currentStudent.name,
-              critic: latestRecord.critic,
-              score: latestRecord.score,
-              sessionName: matchedSession?.sessionName || "건축설계 세션",
-              semester: selectedSemester,
-            }),
-          });
-          const adviceData = await adviceRes.json();
-          if (!adviceRes.ok || adviceData.error) {
-            throw new Error(adviceData.error || "AI 조언 생성 실패");
-          }
-        }
-      }
-
-      // Refresh current student's advice if they were in the list
-      if (student && allRecords.length > 0) {
-        loadAdvice(student.id, allRecords[allRecords.length - 1].date);
-      }
-      showToast("선택된 분반 학생들의 AI 조언 생성이 완료되었습니다!");
-    } catch (err: any) {
-      console.error(err);
-      showToast(`일괄 조언 생성 실패: ${err.message}`);
-    } finally {
-      setBulkAdviceStatus({ loading: false, progress: 0, total: 0, message: "" });
-    }
-  };
-
-  // Bulk Export PDFs to Google Drive
   const bulkExportPdf = async () => {
-    if (sessions.length === 0) return;
-    
-    // Determine target session from active student's latest record on screen, fallback to sessions[0]
-    const latestRecord = allRecords.length > 0 ? allRecords[allRecords.length - 1] : null;
-    let targetSession = latestRecord ? sessions.find((s) => s.id === latestRecord.sessionPageId) : null;
-    if (!targetSession && sessions.length > 0) {
-      targetSession = sessions[0];
-    }
-    if (!targetSession) {
-      showToast("세션 정보를 찾을 수 없습니다.");
-      return;
-    }
-
-    const listToExport = students.filter(s => s.cls === selectedDivision);
-    if (listToExport.length === 0) return;
-
-    if (!confirm(`${selectedDivision} 학생 ${listToExport.length}명의 PDF 일괄 생성을 시작하시겠습니까?\n(대상 세션: ${targetSession.sessionName})`)) {
-      return;
-    }
-
-    setBulkPdfStatus({ loading: true, progress: 0, total: listToExport.length, message: "구글 드라이브 폴더 생성 중..." });
-
+    const classStudents = students.filter((item) => item.cls === selectedDivision);
+    if (classStudents.length === 0) return;
+    setBulkPdfStatus({ loading: true, progress: 0, total: classStudents.length, message: "학생 크리틱 대시보드 PDF 준비 중..." });
     try {
-      // 1. Create or retrieve folder in Google Drive
-      const folderRes = await fetch("/api/export-pdf", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "create_folder",
-          sessionName: targetSession.sessionName,
-          semester: selectedSemester,
-        }),
+      const result = await saveHealthReports(classStudents, selectedSemester, (completed, total, message) => {
+        setBulkPdfStatus({ loading: true, progress: completed, total, message });
       });
-      const folderData = await folderRes.json();
-      if (!folderRes.ok || !folderData.folderId) {
-        throw new Error(folderData.error || "폴더를 생성할 수 없습니다.");
-      }
-      const folderId = folderData.folderId;
-
-      const failedExports: string[] = [];
-
-      // 2. Export each student one by one
-      for (let i = 0; i < listToExport.length; i++) {
-        const currentStudent = listToExport[i];
-        setBulkPdfStatus(prev => ({ ...prev, progress: i + 1, message: `${currentStudent.name} PDF 내보내기 중...` }));
-
-        const pdfRes = await fetch("/api/export-pdf", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "export_pdf",
-            studentId: currentStudent.id,
-            studentName: currentStudent.name,
-            folderId: folderId,
-            period: period,
-            historyPeriod: historyPeriod,
-            semester: selectedSemester,
-          }),
-        });
-        const pdfData = await pdfRes.json();
-        if (!pdfRes.ok || !pdfData.success) {
-          const reason = pdfData.error || `HTTP ${pdfRes.status}`;
-          failedExports.push(`${currentStudent.name}: ${reason}`);
-          console.error(`Failed to export ${currentStudent.name}:`, reason);
-        }
-      }
-
-      if (failedExports.length > 0) {
-        throw new Error(`${failedExports.length}명 PDF 생성 실패 — ${failedExports.slice(0, 3).join(" / ")}`);
-      }
-
-      showToast("구글 드라이브 PDF 일괄 업로드 완료!");
-    } catch (e: any) {
-      console.error(e);
-      showToast(`일괄 내보내기 실패: ${e.message}`);
+      if (result.cancelled) showToast("PDF 저장을 취소했습니다.");
+      else if (result.saved === 0) showToast(`PDF 생성 실패: ${result.failures.slice(0, 2).join(" / ")}`);
+      else showToast(result.failures.length > 0
+        ? `${result.saved}명 저장, ${result.failures.length}명 실패: ${result.failures.slice(0, 2).join(" / ")}`
+        : `${selectedDivision} ${result.saved}명의 학생 크리틱 대시보드 PDF를 ${result.destination === "folder" ? "선택한 폴더" : "ZIP 파일"}에 저장했습니다.`);
+    } catch (error) {
+      console.error(error);
+      showToast(`일괄 저장 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
     } finally {
       setBulkPdfStatus({ loading: false, progress: 0, total: 0, message: "" });
     }
@@ -454,11 +264,13 @@ function StudentBoardContent() {
 
   // 3. Render Chart.js when Records or Period Changes
   useEffect(() => {
+    setChartReady(false);
     if (!mounted || loading || allRecords.length === 0 || !chartRef.current) {
       if (chartInstanceRef.current) {
         chartInstanceRef.current.destroy();
         chartInstanceRef.current = null;
       }
+      if (mounted && !loading && allRecords.length === 0) setChartReady(true);
       return;
     }
 
@@ -468,6 +280,7 @@ function StudentBoardContent() {
         chartInstanceRef.current.destroy();
         chartInstanceRef.current = null;
       }
+      setChartReady(true);
       return;
     }
 
@@ -478,7 +291,10 @@ function StudentBoardContent() {
       chartInstanceRef.current.destroy();
     }
 
-    const labels = filtered.map((r) => r.date ? r.date.substring(5).replace("-", "/") : "");
+    const labels = filtered.map((r) => {
+      const date = pdfMode ? recordClassDate(r) : r.date;
+      return date ? date.substring(5).replace("-", "/") : "";
+    });
     const scores = filtered.map((r) => r.score);
 
     chartInstanceRef.current = new Chart(ctx, {
@@ -552,13 +368,14 @@ function StudentBoardContent() {
         },
       },
     });
+    setChartReady(true);
 
     return () => {
       if (chartInstanceRef.current) {
         chartInstanceRef.current.destroy();
       }
     };
-  }, [allRecords, period, darkMode, mounted, loading]);
+  }, [allRecords, period, darkMode, mounted, loading, sessions, pdfMode]);
 
   // Click Outside to Close Period Selector Dropdown
   useEffect(() => {
@@ -576,7 +393,9 @@ function StudentBoardContent() {
   }, []);
 
   // Filter records based on selected period
+  const recordClassDate = (record: Evaluation) => sessions.find((item) => item.id === record.sessionPageId)?.date || record.date;
   const getFilteredRecords = () => {
+    if (pdfMode) return [...allRecords].sort((a, b) => recordClassDate(a).localeCompare(recordClassDate(b)));
     if (period === "all") return allRecords;
     const now = new Date();
     const daysMap: Record<string, number> = { "2w": 14, "3w": 21, "1m": 30, "2m": 60, "3m": 90, "4m": 120 };
@@ -593,17 +412,19 @@ function StudentBoardContent() {
 
   // Filter previous records based on selected historyPeriod
   const getFilteredHistoryRecords = () => {
-    if (allRecords.length <= 1) return [];
-    const prevRecords = allRecords.slice(0, -1);
+    const prevRecords = pdfMode ? getFilteredRecords() : allRecords.slice(0, -1);
     if (historyPeriod === "all") return prevRecords;
 
     const now = new Date();
     const daysMap: Record<string, number> = { "2w": 14, "3w": 21, "1m": 30, "2m": 60 };
     const limitDays = daysMap[historyPeriod] || 14;
+    const todayInSeoul = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
 
     return prevRecords.filter((r) => {
-      if (!r.date) return false;
-      const rDate = new Date(r.date);
+      const date = pdfMode ? recordClassDate(r) : r.date;
+      if (!date) return false;
+      if (pdfMode) return isWithinRecentClassDays(date, todayInSeoul, limitDays);
+      const rDate = new Date(date);
       const diffTime = Math.abs(now.getTime() - rDate.getTime());
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
       return diffDays <= limitDays;
@@ -658,7 +479,7 @@ function StudentBoardContent() {
   }
 
   return (
-    <div style={{ maxWidth: pdfMode ? "680px" : "1100px", margin: "0 auto", padding: pdfMode ? "0px" : "24px 16px" }} className={`animated-fade-in ${pdfMode ? "pdf-mode" : ""}`}>
+    <div data-pdf-ready={pdfMode && !adviceLoading && chartReady ? "true" : undefined} style={{ maxWidth: pdfMode ? "680px" : "1100px", margin: "0 auto", padding: pdfMode ? "0px" : "24px 16px" }} className={`animated-fade-in ${pdfMode ? "pdf-mode" : ""}`}>
       
       {/* Navigation bar (hidden in PDF print) */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }} className="no-print">
@@ -717,7 +538,7 @@ function StudentBoardContent() {
               >
                 <button
                   onClick={() => { setShowSettingsDropdown(false); exportSinglePdf(); }}
-                  disabled={!sessionData || !isRegistered || exportStatus.loading || allRecords.length === 0}
+                  disabled={!sessionData || !isRegistered || exportStatus.loading}
                   className="btn"
                   style={{
                     justifyContent: "flex-start",
@@ -731,7 +552,7 @@ function StudentBoardContent() {
                     fontWeight: 500,
                     textAlign: "left",
                     cursor: exportStatus.loading ? "default" : "pointer",
-                    opacity: !sessionData || !isRegistered || allRecords.length === 0 ? 0.5 : 1,
+                    opacity: !sessionData || !isRegistered ? 0.5 : 1,
                   }}
                   onMouseEnter={(e) => { if (!exportStatus.loading) e.currentTarget.style.background = "var(--primary-light)"; }}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -741,45 +562,14 @@ function StudentBoardContent() {
                   ) : (
                     <Download style={{ width: "15px", height: "15px", color: "var(--text-muted)", flexShrink: 0 }} />
                   )}
-                  현재 학생 PDF 생성
-                </button>
-
-                <div style={{ height: "1px", background: "var(--border-subtle)", margin: "2px 4px" }} />
-
-                <button
-                  onClick={() => { setShowSettingsDropdown(false); bulkGenerateAdvice(); }}
-                  disabled={isReadOnly || !sessionData || !isRegistered || bulkAdviceStatus.loading || bulkPdfStatus.loading}
-                  className="btn"
-                  style={{
-                    justifyContent: "flex-start",
-                    gap: "10px",
-                    padding: "9px 12px",
-                    fontSize: "13px",
-                    background: "transparent",
-                    border: "none",
-                    color: bulkAdviceStatus.loading ? "var(--text-light)" : "var(--text-main)",
-                    borderRadius: "8px",
-                    fontWeight: 500,
-                    textAlign: "left",
-                    cursor: bulkAdviceStatus.loading ? "default" : "pointer",
-                  opacity: isReadOnly || !sessionData || !isRegistered ? 0.5 : 1,
-                  }}
-                  onMouseEnter={(e) => { if (!bulkAdviceStatus.loading) e.currentTarget.style.background = "var(--primary-light)"; }}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                >
-                  {bulkAdviceStatus.loading ? (
-                    <Loader2 className="animated-spin" style={{ width: "15px", height: "15px", color: "var(--primary)", flexShrink: 0 }} />
-                  ) : (
-                    <Sparkles style={{ width: "15px", height: "15px", color: "var(--primary)", flexShrink: 0 }} />
-                  )}
-                  분반 AI 조언 일괄 생성
+                  현재 학생 크리틱 대시보드 다운로드
                 </button>
 
                 <div style={{ height: "1px", background: "var(--border-subtle)", margin: "2px 4px" }} />
 
                 <button
                   onClick={() => { setShowSettingsDropdown(false); bulkExportPdf(); }}
-                  disabled={!sessionData || !isRegistered || bulkAdviceStatus.loading || bulkPdfStatus.loading}
+                  disabled={!sessionData || !isRegistered || bulkPdfStatus.loading}
                   className="btn"
                   style={{
                     justifyContent: "flex-start",
@@ -803,7 +593,7 @@ function StudentBoardContent() {
                   ) : (
                     <Download style={{ width: "15px", height: "15px", color: "var(--secondary)", flexShrink: 0 }} />
                   )}
-                  분반 PDF 일괄 생성
+                  분반 학생 크리틱 대시보드 일괄 저장
                 </button>
               </div>
             )}
@@ -886,7 +676,7 @@ function StudentBoardContent() {
               {/* Individual PDF Export */}
               <button 
                 onClick={exportSinglePdf} 
-                disabled={exportStatus.loading || allRecords.length === 0} 
+                disabled={exportStatus.loading}
                 className="btn" 
                 style={{ padding: "6px 12px", fontSize: "11px", background: "var(--bg-card)", border: "1px solid var(--border-subtle)", color: "var(--text-main)", display: "inline-flex", alignItems: "center", gap: "4px", cursor: "pointer" }}
               >
@@ -895,28 +685,13 @@ function StudentBoardContent() {
                 ) : (
                   <Download style={{ width: "12px", height: "12px" }} />
                 )}
-                <span>PDF 다운로드(구글 드라이브)</span>
-              </button>
-
-              {/* Bulk Generation of AI advice */}
-              <button 
-                onClick={bulkGenerateAdvice} 
-                disabled={isReadOnly || bulkAdviceStatus.loading || bulkPdfStatus.loading}
-                className="btn" 
-                style={{ padding: "6px 12px", fontSize: "11px", background: "var(--primary)", color: "#fff", border: "none", display: "inline-flex", alignItems: "center", gap: "4px", cursor: "pointer", fontWeight: 600 }}
-              >
-                {bulkAdviceStatus.loading ? (
-                  <Loader2 className="animated-spin" style={{ width: "12px", height: "12px" }} />
-                ) : (
-                  <Sparkles style={{ width: "12px", height: "12px" }} />
-                )}
-                <span>분반 AI 조언 일괄 생성</span>
+                <span>현재 학생 크리틱 대시보드 다운로드</span>
               </button>
 
               {/* Bulk Generation of PDFs */}
               <button 
                 onClick={bulkExportPdf} 
-                disabled={bulkAdviceStatus.loading || bulkPdfStatus.loading} 
+                disabled={bulkPdfStatus.loading}
                 className="btn" 
                 style={{ padding: "6px 12px", fontSize: "11px", background: "var(--secondary)", color: "#fff", border: "none", display: "inline-flex", alignItems: "center", gap: "4px", cursor: "pointer", fontWeight: 600 }}
               >
@@ -925,32 +700,24 @@ function StudentBoardContent() {
                 ) : (
                   <Download style={{ width: "12px", height: "12px" }} />
                 )}
-                <span>분반 PDF 일괄 생성</span>
+                <span>분반 학생 크리틱 대시보드 일괄 저장</span>
               </button>
             </div>
           </div>
           
           {/* Bulk processing progress bar */}
-          {(bulkAdviceStatus.loading || bulkPdfStatus.loading) && (
+          {bulkPdfStatus.loading && (
             <div style={{ marginTop: "12px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--text-main)", marginBottom: "4px", fontWeight: 500 }}>
-                <span>{bulkAdviceStatus.loading ? bulkAdviceStatus.message : bulkPdfStatus.message}</span>
-                <span>
-                  {bulkAdviceStatus.loading 
-                    ? `${bulkAdviceStatus.progress} / ${bulkAdviceStatus.total}` 
-                    : `${bulkPdfStatus.progress} / ${bulkPdfStatus.total}`}
-                </span>
+                <span>{bulkPdfStatus.message}</span>
+                <span>{bulkPdfStatus.progress} / {bulkPdfStatus.total}</span>
               </div>
               <div style={{ height: "4px", background: "var(--border-subtle)", borderRadius: "2px", overflow: "hidden" }}>
                 <div 
                   style={{ 
                     height: "100%", 
-                    background: bulkAdviceStatus.loading ? "var(--primary)" : "var(--secondary)", 
-                    width: `${((bulkAdviceStatus.loading 
-                      ? bulkAdviceStatus.progress 
-                      : bulkPdfStatus.progress) / (bulkAdviceStatus.loading 
-                      ? bulkAdviceStatus.total 
-                      : bulkPdfStatus.total)) * 100}%`,
+                    background: "var(--secondary)",
+                    width: `${(bulkPdfStatus.progress / bulkPdfStatus.total) * 100}%`,
                     transition: "width 0.3s ease" 
                   }} 
                 />
@@ -969,7 +736,7 @@ function StudentBoardContent() {
           <div>
             <h1 style={{ fontSize: "24px", fontWeight: 700, color: "var(--text-main)", letterSpacing: "-0.02em" }}>{student.name}</h1>
             <p style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
-              {student.cls} &nbsp;&middot;&nbsp; 2026 – 1학기 &nbsp;&middot;&nbsp; 건축설계 A
+              {student.cls} &nbsp;&middot;&nbsp; 2026 – {selectedSemester === "2026-2" ? "2학기 · 건축설계 B" : "1학기 · 건축설계 A"}
             </p>
           </div>
         </div>
@@ -977,11 +744,12 @@ function StudentBoardContent() {
         {/* Right Header details (hidden controls in PDF print) */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px", flexShrink: 0 }}>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-muted)" }}>Student Critic Log</div>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-muted)" }}>{pdfMode ? "학생 크리틱 대시보드" : "Student Critic Log"}</div>
             <div style={{ fontSize: "11px", color: "var(--text-light)", marginTop: "1px" }}>
-              <span style={{ color: "var(--secondary)", fontWeight: 600 }}>건축설계 A</span> &nbsp;
+              <span style={{ color: "var(--secondary)", fontWeight: 600 }}>{selectedSemester === "2026-2" ? "건축설계 B" : "건축설계 A"}</span> &nbsp;
               <span style={{ color: "var(--danger)", fontWeight: 600 }}>[ DOA-MNU ]</span>
             </div>
+            {pdfMode && <div style={{ fontSize: "10px", color: "var(--text-light)", marginTop: "2px" }}>발행일 {new Date().toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" })}</div>}
           </div>
 
           {/* Period filter (hidden in PDF print) */}
@@ -1021,6 +789,7 @@ function StudentBoardContent() {
         <div className="glass-card" style={{ height: "300px", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", color: "var(--text-light)" }}>
           <ImageIcon style={{ width: "40px", height: "40px", opacity: 0.3, marginBottom: "12px" }} />
           <span style={{ fontSize: "14px", fontWeight: 600 }}>해당 기간에 평가 기록이 없습니다.</span>
+          {pdfMode && <span style={{ fontSize: "12px", marginTop: "12px" }}>건축학과 AI 젠지 조언: {aiAdvice || "아직 등록되지 않았습니다."}</span>}
         </div>
       ) : (
         <>
@@ -1084,7 +853,7 @@ function StudentBoardContent() {
             <h3 style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-light)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>최근 평가 피드백</h3>
             <div style={{ background: "rgba(0,0,0,0.02)", border: "1px solid var(--border-subtle)", borderRadius: "8px", padding: "12px 16px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "10px" }}>
-                <span style={{ fontSize: "14px", fontWeight: 700 }}>{filtered[filtered.length - 1].date}</span>
+                <span style={{ fontSize: "14px", fontWeight: 700 }}>{pdfMode ? recordClassDate(filtered[filtered.length - 1]) : filtered[filtered.length - 1].date}</span>
                 <span className="font-display" style={{ fontSize: "32px", fontWeight: 700, color: "#185FA5", lineHeight: 1 }}>
                   {fmt(filtered[filtered.length - 1].score)}<span style={{ fontSize: "12px", color: "var(--text-light)", marginLeft: "2px" }}>/ 10</span>
                 </span>
@@ -1102,7 +871,7 @@ function StudentBoardContent() {
               className="btn" 
               style={{ width: "100%", justifyContent: "space-between", background: "var(--bg-card)", border: "1px solid var(--border-subtle)", color: "var(--text-muted)", padding: "10px 14px", fontSize: "13px", fontWeight: 600, borderRadius: "8px", cursor: pdfMode ? "default" : "pointer", display: "flex", alignItems: "center" }}
             >
-              <span>이전 평가 기록 보기 ({getFilteredHistoryRecords().length}회)</span>
+              <span>{pdfMode ? "최근 3주간 평가 기록" : "이전 평가 기록 보기"} ({getFilteredHistoryRecords().length}회)</span>
               {!pdfMode && (histOpen ? <ChevronUp style={{ width: "16px", height: "16px" }} /> : <ChevronDown style={{ width: "16px", height: "16px" }} />)}
             </button>
             
@@ -1161,7 +930,7 @@ function StudentBoardContent() {
                       className="glass-card"
                     >
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
-                        <span style={{ fontSize: "12px", color: "var(--text-light)" }}>{r.date}</span>
+                        <span style={{ fontSize: "12px", color: "var(--text-light)" }}>{pdfMode ? recordClassDate(r) : r.date}</span>
                         <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                           <span style={{ fontSize: "15px", fontWeight: 700 }}>{fmt(r.score)}</span>
                           <span style={{ fontSize: "10px", color: "var(--text-light)" }}>/ 10</span>
@@ -1191,42 +960,15 @@ function StudentBoardContent() {
             )}
           </div>
 
-          {/* AI Gen-Z Advisor Advice Card */}
-          <div className="glass-card" style={{ border: "1px solid rgba(59, 130, 246, 0.2)", background: "rgba(59, 130, 246, 0.03)", padding: "16px", marginBottom: "12px" }}>
+          {/* 학생 크리틱 대시보드 PDF에만 AI 젠지 조언을 표시한다. */}
+          {pdfMode && <div className="glass-card" style={{ border: "1px solid rgba(59, 130, 246, 0.2)", background: "rgba(59, 130, 246, 0.03)", padding: "16px", marginBottom: "12px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", flexWrap: "wrap", gap: "10px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                 <Sparkles style={{ width: "16px", height: "16px", color: "var(--primary)" }} />
                 <h3 style={{ fontSize: "14px", fontWeight: 700 }} className="font-display">🤖 건축학과 AI 젠지(Gen-Z) 조언</h3>
+                {aiAdviceDate && <span style={{ fontSize: "10px", color: "var(--text-light)" }}>({aiAdviceDate} 생성)</span>}
               </div>
               
-              {/* Individual manual advice generation button (visible to professors only) */}
-              {sessionData && isRegistered && !pdfMode && (
-                <button
-                  onClick={generateSingleAdvice}
-                  disabled={isReadOnly || singleAdviceGenerating || allRecords.length === 0}
-                  className="btn"
-                  style={{
-                    padding: "3px 8px",
-                    fontSize: "11px",
-                    background: "var(--primary-light)",
-                    color: "var(--primary)",
-                    border: "1px solid rgba(42, 111, 191, 0.3)",
-                    borderRadius: "6px",
-                    fontWeight: 600,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "4px",
-                    cursor: "pointer"
-                  }}
-                >
-                  {singleAdviceGenerating ? (
-                    <Loader2 className="animated-spin" style={{ width: "12px", height: "12px" }} />
-                  ) : (
-                    <Sparkles style={{ width: "12px", height: "12px" }} />
-                  )}
-                  <span>{aiAdvice ? "조언 다시 받기" : "조언 생성하기"}</span>
-                </button>
-              )}
             </div>
             
             {adviceLoading ? (
@@ -1241,15 +983,15 @@ function StudentBoardContent() {
             ) : (
               <div style={{ fontSize: "12px", color: "var(--text-light)", padding: "8px 0", display: "flex", alignItems: "center", gap: "6px" }}>
                 <Info style={{ width: "14px", height: "14px" }} />
-                아직 AI 조언이 등록되지 않았습니다.{sessionData && " 우측 상단의 생성 버튼을 눌러보세요."}
+                아직 AI 조언이 등록되지 않았습니다.
               </div>
             )}
-          </div>
+          </div>}
 
           {/* Footer details */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "12px" }}>
             <div style={{ fontSize: "11px", color: "var(--text-light)" }}>
-              {allRecords.length}회 평가 &middot; {allRecords[0].date} – {allRecords[allRecords.length - 1].date}
+              {allRecords.length}회 평가 &middot; {pdfMode ? recordClassDate(filtered[0]) : allRecords[0].date} – {pdfMode ? recordClassDate(filtered[filtered.length - 1]) : allRecords[allRecords.length - 1].date}
             </div>
             <div style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 500 }}>
               담당교수 : 김태훈 &middot; 정미연 &middot; 하신해

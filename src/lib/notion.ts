@@ -1,5 +1,6 @@
 import { Client } from "@notionhq/client";
 import { DEFAULT_SEMESTER, type SemesterKey } from "@/lib/semester";
+import { chooseJournalPlacement } from "@/lib/notion-journal-placement";
 
 // Initialize Notion Client
 const token = process.env.NOTION_TOKEN;
@@ -58,7 +59,35 @@ export interface Evaluation {
   critic: string;
   date: string;
   imageUrl?: string;
+  imageUploadId?: string;
   notionUrl?: string;
+}
+
+export async function uploadEvaluationImage(filename: string, image: Buffer): Promise<string> {
+  if (!notion) throw new Error("Notion이 설정되지 않았습니다.");
+  const created = await notion.fileUploads.create({
+    mode: "single_part",
+    filename,
+    content_type: "image/jpeg",
+  });
+  const uploaded = await notion.fileUploads.send({
+    file_upload_id: created.id,
+    file: { filename, data: new Blob([new Uint8Array(image)], { type: "image/jpeg" }) },
+  });
+  if (uploaded.status !== "uploaded") throw new Error("Notion 이미지 업로드를 완료하지 못했습니다.");
+  return uploaded.id;
+}
+
+function getEvaluationImageUrl(page: any): string {
+  const fileObj = page.properties["과제물이미지"]?.files?.[0];
+  if (fileObj) return fileObj.type === "external" ? fileObj.external.url : fileObj.file?.url || "";
+  const legacyUrl = page.properties["이미지URL"]?.rich_text?.[0]?.plain_text || "";
+  return legacyUrl.startsWith("https://") ? legacyUrl : "";
+}
+
+function getEvaluationImageUploadId(page: any): string | undefined {
+  const value = page.properties["이미지URL"]?.rich_text?.[0]?.plain_text || "";
+  return value.startsWith("notion-file-upload:") ? value.slice("notion-file-upload:".length) : undefined;
 }
 
 // Helper to extract plain text from Notion rich text properties
@@ -169,11 +198,7 @@ export async function fetchEvaluationsBySession(sessionId: string, semester: Sem
       const date = page.properties["평가일시"]?.date?.start || "";
       
       // Extract image URL
-      let imageUrl = page.properties["이미지URL"]?.rich_text?.[0]?.plain_text || "";
-      if (!imageUrl && page.properties["과제물이미지"]?.files?.length > 0) {
-        const fileObj = page.properties["과제물이미지"].files[0];
-        imageUrl = fileObj.type === "external" ? fileObj.external.url : fileObj.file?.url || "";
-      }
+      const imageUrl = getEvaluationImageUrl(page);
 
       result[studentRelation] = {
         pageId: page.id,
@@ -184,6 +209,7 @@ export async function fetchEvaluationsBySession(sessionId: string, semester: Sem
         critic,
         date,
         imageUrl,
+        imageUploadId: getEvaluationImageUploadId(page),
         notionUrl: page.url,
       };
     });
@@ -226,11 +252,7 @@ export async function fetchStudentEvaluations(studentId: string, semester: Semes
       const critic = getRichTextPlain(page.properties["개별크리틱"]);
       const date = page.properties["평가일시"]?.date?.start || "";
 
-      let imageUrl = page.properties["이미지URL"]?.rich_text?.[0]?.plain_text || "";
-      if (!imageUrl && page.properties["과제물이미지"]?.files?.length > 0) {
-        const fileObj = page.properties["과제물이미지"].files[0];
-        imageUrl = fileObj.type === "external" ? fileObj.external.url : fileObj.file?.url || "";
-      }
+      const imageUrl = getEvaluationImageUrl(page);
 
       return {
         pageId: page.id,
@@ -241,6 +263,7 @@ export async function fetchStudentEvaluations(studentId: string, semester: Semes
         critic,
         date,
         imageUrl,
+        imageUploadId: getEvaluationImageUploadId(page),
         notionUrl: page.url,
       };
     });
@@ -260,14 +283,14 @@ export async function saveEvaluation(params: {
   professor: string;
   score: number;
   critic: string;
-  imageUrl?: string;
+  imageUploadId?: string;
 }): Promise<Evaluation> {
   const { evaluations: dbEvaluations } = getSemesterDatabases(params.semester);
   if (!isNotionConfigured(params.semester) || !notion || !dbEvaluations) {
     throw new Error("Notion is not configured.");
   }
 
-  const { studentPageId, studentName, sessionPageId, sessionName, professor, score, critic, imageUrl } = params;
+  const { studentPageId, studentName, sessionPageId, sessionName, professor, score, critic, imageUploadId } = params;
   const dateStr = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
   const pageTitle = `${studentName} - ${sessionName.substring(0, 30)}`;
 
@@ -307,23 +330,16 @@ export async function saveEvaluation(params: {
       },
     };
 
-    if (imageUrl) {
-      properties["이미지URL"] = {
-        rich_text: [{ text: { content: imageUrl } }],
-      };
+    if (imageUploadId) {
+      properties["이미지URL"] = { rich_text: [{ text: { content: `notion-file-upload:${imageUploadId}` } }] };
       properties["과제물이미지"] = {
-        files: [
-          {
-            name: "uploaded_work.jpg",
-            type: "external",
-            external: { url: imageUrl },
-          },
-        ],
+        files: [{ name: `${studentName}.jpg`, type: "file_upload", file_upload: { id: imageUploadId } }],
       };
     }
 
     let pageId = "";
     let notionUrl = "";
+    let savedPage: any;
 
     if (existing.results.length > 0) {
       // Update existing page
@@ -334,6 +350,7 @@ export async function saveEvaluation(params: {
         properties,
       });
       notionUrl = (res as any).url;
+      savedPage = res;
     } else {
       // Create new page
       const res = await notion.pages.create({
@@ -342,6 +359,7 @@ export async function saveEvaluation(params: {
       });
       pageId = res.id;
       notionUrl = (res as any).url;
+      savedPage = res;
     }
 
     return {
@@ -352,7 +370,8 @@ export async function saveEvaluation(params: {
       score,
       critic,
       date: dateStr,
-      imageUrl,
+      imageUrl: getEvaluationImageUrl(savedPage),
+      imageUploadId: getEvaluationImageUploadId(savedPage),
       notionUrl,
     };
   } catch (error) {
@@ -493,7 +512,7 @@ export async function saveStudentAdvice(params: {
         relation: [{ id: studentId }],
       },
       "AI 조언": {
-        rich_text: [{ text: { content: advice } }],
+        rich_text: buildRichText(advice),
       },
     };
 
@@ -769,14 +788,64 @@ function buildRichText(text: string) {
 }
 
 export interface NotionPageInput {
-  sessionPageId: string;
-  sessionName: string;
-  description: string;
-  division: "1분반" | "2분반" | "";
-  overallClass1: string;
-  overallClass2: string;
+  semester: SemesterKey;
+  date: string;
+  sessions: Session[];
   students: Student[];
   evaluations: Record<string, Evaluation>; // studentId → Evaluation
+}
+
+const JOURNAL_MARKER = "평가폼 자동 생성";
+const JOURNAL_TITLES = ["과제", "분반별 총평", "개인별 크리틱 및 평가"];
+
+function getSemesterMainPageId(semester: SemesterKey): string {
+  if (semester === "2026-1") {
+    return process.env.NOTION_SEMESTER_MAIN_PAGE_2026_1 || "369987c1bf1e80a8a60acdd3c220fa4a";
+  }
+  return process.env.NOTION_SEMESTER_MAIN_PAGE_2026_2 || "388987c1bf1e808c9813e07ac4e7c441";
+}
+
+async function listAllChildBlocks(blockId: string): Promise<any[]> {
+  if (!notion) return [];
+  const blocks: any[] = [];
+  let startCursor: string | undefined;
+  do {
+    const page = await notion.blocks.children.list({ block_id: blockId, page_size: 100, start_cursor: startCursor });
+    blocks.push(...page.results);
+    startCursor = page.has_more ? page.next_cursor || undefined : undefined;
+  } while (startCursor);
+  return blocks;
+}
+
+function blockTitle(block: any): string {
+  if (block.type === "child_page") return block.child_page?.title || "";
+  return (block[block.type]?.rich_text || []).map((item: any) => item.plain_text || item.text?.content || "").join("");
+}
+
+async function findOrCreateJournalPage(parentId: string, date: string, sessions: Session[]): Promise<{ id: string; url: string }> {
+  if (!notion) throw new Error("Notion이 설정되지 않았습니다.");
+  const siblings = await listAllChildBlocks(parentId);
+  const mmdd = date.slice(5, 7) + date.slice(8, 10);
+  const placement = chooseJournalPlacement(
+    date,
+    sessions.map((item) => item.sessionName),
+    siblings.filter((block) => block.type === "child_page").map((block) => ({ id: block.id, title: blockTitle(block) }))
+  );
+  if (placement.existingId) {
+    const page: any = await notion.pages.retrieve({ page_id: placement.existingId });
+    return { id: placement.existingId, url: page.url };
+  }
+
+  // 날짜순으로 이어 붙인다. 관리 데이터베이스 앞에 놓기 위해 직전 날짜 페이지를 기준으로 한다.
+  const position = placement.afterBlockId
+    ? { type: "after_block" as const, after_block: { id: placement.afterBlockId } }
+    : { type: "page_start" as const };
+  const page: any = await notion.pages.create({
+    parent: { page_id: parentId },
+    properties: { title: { title: [{ text: { content: `${mmdd} 수업일지` } }] } },
+    position,
+  });
+  return { id: page.id, url: page.url };
 }
 
 export async function generateNotionPage(input: NotionPageInput): Promise<{ success: boolean; url?: string; error?: string }> {
@@ -784,25 +853,31 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
     return { success: false, error: "Notion 클라이언트가 설정되지 않았습니다." };
   }
 
-  const { sessionPageId, sessionName, description, division, overallClass1, overallClass2, students, evaluations } = input;
+  const { semester, date, sessions, students, evaluations } = input;
 
   try {
-    // ── Step 1: 기존 블록 모두 삭제 ──────────────────────────────────────────
-    const existingBlocks = await notion.blocks.children.list({ block_id: sessionPageId, page_size: 100 });
-    for (const block of existingBlocks.results) {
-      await notion.blocks.delete({ block_id: (block as any).id });
+    const page = await findOrCreateJournalPage(getSemesterMainPageId(semester), date, sessions);
+    const existingBlocks = await listAllChildBlocks(page.id);
+    const markerText = `${JOURNAL_MARKER} · ${date}`;
+    let marker = existingBlocks.find((block) => block.type === "heading_3" && blockTitle(block) === markerText);
+    if (!marker) {
+      const response = await notion.blocks.children.append({
+        block_id: page.id,
+        children: [{ object: "block", type: "heading_3", heading_3: { rich_text: buildRichText(markerText) } }],
+        position: { type: "start" },
+      });
+      marker = response.results[0];
     }
 
-    // ── Step 2: 학생 순서 정렬 ───────────────────────────────────────────────
-    const sessionStudents = division ? students.filter(s => s.cls === division) : students;
-    const ordered1 = sessionStudents
-      .filter(s => s.cls === "1분반")
-      .sort((a, b) => a.order - b.order);
-    const ordered2 = sessionStudents
-      .filter(s => s.cls === "2분반")
-      .sort((a, b) => a.order - b.order);
+    // 재실행 시 자동 생성한 블록만 바꾼다. 페이지의 수기 작성 내용과 관리 DB는 보존한다.
+    const currentBlocks = await listAllChildBlocks(page.id);
+    const markerIndex = currentBlocks.findIndex((block) => block.id === marker.id);
+    const oldGenerated: any[] = [];
+    for (const block of currentBlocks.slice(markerIndex + 1)) {
+      if (block.type !== "toggle" || !JOURNAL_TITLES.some((title) => blockTitle(block) === title || blockTitle(block).startsWith(`${title} :`))) break;
+      oldGenerated.push(block);
+    }
 
-    // ── Step 3: 학생별 토글 블록 빌드 ───────────────────────────────────────
     const buildStudentToggle = (st: Student): any => {
       const ev = evaluations[st.id];
       const scoreText = ev ? `${st.name}  ${ev.score}` : `${st.name}  (미평가)`;
@@ -812,7 +887,13 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
       const innerChildren: any[] = [];
 
       // 이미지 블록 (URL이 있을 때만)
-      if (imageUrl) {
+      if (ev?.imageUploadId) {
+        innerChildren.push({
+          object: "block",
+          type: "image",
+          image: { type: "file_upload", file_upload: { id: ev.imageUploadId } },
+        });
+      } else if (imageUrl && !imageUrl.includes("prod-files-secure.s3") && !imageUrl.includes("notion-static.com")) {
         innerChildren.push({
           object: "block",
           type: "image",
@@ -842,76 +923,77 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
       };
     };
 
-    // ── Step 4: 전체 블록 구조 조립 ─────────────────────────────────────────
+    const classSessions = (["1분반", "2분반"] as const).map((cls) => ({
+      cls,
+      session: sessions.find((item) => item.division === cls) || (sessions.length === 1 && !sessions[0].division ? sessions[0] : undefined),
+    }));
+    const descriptions = classSessions.map(({ cls, session }) => ({ cls, name: session?.sessionName || "", text: session?.description || "" }));
+    const sameDescription = descriptions[0].text === descriptions[1].text;
+    const assignmentName = sessions.length === 1 ? sessions[0].sessionName : "수업 과제";
+    const assignmentChildren: any[] = sameDescription
+      ? [{ object: "block", type: "paragraph", paragraph: { rich_text: buildRichText(descriptions[0].text || "(과제 설명 없음)") } }]
+      : descriptions.map(({ cls, name, text }) => ({
+          object: "block", type: "toggle", toggle: {
+            rich_text: buildRichText(`${cls}${name ? ` · ${name}` : ""}`),
+            children: [{ object: "block", type: "paragraph", paragraph: { rich_text: buildRichText(text || "(과제 설명 없음)") } }],
+          },
+        }));
+
     const blocks: any[] = [
-      // [과제] 토글
       {
         object: "block",
         type: "toggle",
         toggle: {
-          rich_text: [{ type: "text", text: { content: `과제 : ${sessionName}` } }],
-          children: [
-            {
-              object: "block",
-              type: "paragraph",
-              paragraph: { rich_text: buildRichText(description || "(과제 설명 없음)") },
-            },
-          ],
+          rich_text: buildRichText(`과제 : ${assignmentName}`),
+          children: assignmentChildren,
         },
       },
-      // [분반별 총평] 토글
       {
         object: "block",
         type: "toggle",
         toggle: {
           rich_text: [{ type: "text", text: { content: "분반별 총평" } }],
-          children: [
-            {
-              object: "block",
-              type: "heading_3",
-              heading_3: { rich_text: [{ type: "text", text: { content: `${division || "1분반"} 총평` } }] },
+          children: classSessions.map(({ cls, session }) => ({
+            object: "block", type: "toggle", toggle: {
+              rich_text: buildRichText(`${cls} 총평${session ? ` · ${session.sessionName}` : ""}`),
+              children: [{ object: "block", type: "paragraph", paragraph: {
+                rich_text: buildRichText((cls === "1분반" ? session?.overallClass1 : session?.overallClass2) || "(총평 없음)"),
+              } }],
             },
-            {
-              object: "block",
-              type: "paragraph",
-              paragraph: { rich_text: buildRichText((division === "2분반" ? overallClass2 : overallClass1) || "(총평 없음)") },
-            },
-          ],
+          })),
         },
       },
-      // [개인별 크리틱 및 평가] 토글
       {
         object: "block",
         type: "toggle",
         toggle: {
           rich_text: [{ type: "text", text: { content: "개인별 크리틱 및 평가" } }],
-          children: [
-            ...(division !== "2분반" ? [{
-              object: "block",
-              type: "heading_3",
-              heading_3: { rich_text: [{ type: "text", text: { content: "1분반" } }] },
-            }, ...ordered1.map(buildStudentToggle)] : []),
-            ...(division !== "1분반" ? [{
-              object: "block",
-              type: "heading_3",
-              heading_3: { rich_text: [{ type: "text", text: { content: "2분반" } }] },
-            }, ...ordered2.map(buildStudentToggle)] : []),
-          ],
         },
       },
     ];
 
-    // ── Step 5: Notion API에 블록 추가 ──────────────────────────────────────
-    await notion.blocks.children.append({
-      block_id: sessionPageId,
+    const created = await notion.blocks.children.append({
+      block_id: page.id,
       children: blocks,
+      position: { type: "after_block", after_block: { id: marker.id } },
     });
-
-    // Retrieve page URL
-    const page: any = await notion.pages.retrieve({ page_id: sessionPageId });
-    const url = page.url || `https://notion.so/${sessionPageId.replace(/-/g, "")}`;
-
-    return { success: true, url };
+    const personalBlock = created.results[2];
+    for (const cls of ["1분반", "2분반"] as const) {
+      const ordered = students.filter((student) => student.cls === cls).sort((a, b) => a.order - b.order);
+      const classBlock = await notion.blocks.children.append({
+        block_id: personalBlock.id,
+        children: [{ object: "block", type: "toggle", toggle: { rich_text: buildRichText(cls) } }],
+      });
+      // Notion은 한 요청에 깊게 중첩된 블록을 받지 않으므로 학생별 내용을 분반 토글 아래에 추가한다.
+      for (let index = 0; index < ordered.length; index += 100) {
+        await notion.blocks.children.append({
+          block_id: classBlock.results[0].id,
+          children: ordered.slice(index, index + 100).map(buildStudentToggle),
+        });
+      }
+    }
+    for (const block of oldGenerated) await notion.blocks.delete({ block_id: block.id });
+    return { success: true, url: page.url };
   } catch (error: any) {
     console.error("Error generating Notion page:", error);
     return { success: false, error: error.message || "Notion 페이지 생성 실패" };

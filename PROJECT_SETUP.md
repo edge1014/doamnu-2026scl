@@ -9,9 +9,9 @@
 | 항목 | 내용 |
 |---|---|
 | 서비스명 | 건축설계 크리틱 로그 시스템 (SCL) |
-| 운영 URL | https://doamnu-2026scl-284108510633.asia-northeast3.run.app |
+| 운영 URL | https://doamnu-2026scl.vercel.app |
 | GitHub | https://github.com/edge1014/doamnu-2026scl |
-| 인프라 | Google Cloud Run (asia-northeast3, 서울) |
+| 인프라 | Vercel (현재 운영 주소 기준) |
 | 프레임워크 | Next.js (App Router, TypeScript) |
 
 ---
@@ -20,12 +20,12 @@
 
 ```
 교수 평가 입력 (Cloud Run 앱)
-  ├── 이미지 업로드 → Google Drive 저장 → URL을 Notion DB3에 기록
+  ├── 대표이미지 업로드 → 800픽셀 JPG로 변환 → Notion DB3에 저장
   ├── 평가 점수 + 크리틱 → Notion DB3 저장
-  └── AI 조언 생성 → Gemini API → Notion DB4 저장
+  └── 학생 크리틱 대시보드 PDF 생성 시 AI 젠지 조언 생성 → Notion DB4 저장 → PDF에만 표시
 
 학생 크리틱 보드 (/board?student=학생ID)
-  └── Notion DB3 조회 → 이미지/점수/크리틱/AI조언 표시
+  └── Notion DB3 조회 → 이미지/점수/크리틱 표시
 ```
 
 ---
@@ -47,7 +47,7 @@ URL: https://www.notion.so/369987c1bf1e80a8a60acdd3c220fa4a
 
 ---
 
-## 4. GCP 설정
+## 4. 과거 GCP 설정 (현재 운영 주소와 별개)
 
 | 항목 | 값 |
 |---|---|
@@ -67,7 +67,9 @@ URL: https://www.notion.so/369987c1bf1e80a8a60acdd3c220fa4a
 
 ---
 
-## 5. GitHub Actions CI/CD
+## 5. 과거 GitHub Actions CI/CD 메모
+
+현재 저장소에는 아래에 적힌 `.github/workflows/deploy.yml` 파일이 없습니다. 실제 배포는 Vercel 프로젝트 연결 상태를 확인해야 합니다.
 
 **설정 파일:** `.github/workflows/deploy.yml`  
 **트리거:** `main` 브랜치에 push할 때마다 자동 배포
@@ -81,7 +83,9 @@ URL: https://www.notion.so/369987c1bf1e80a8a60acdd3c220fa4a
 
 ---
 
-## 6. 2026-05-26 코드 변경사항
+## 6. 2026-05-26 코드 변경사항 (과거 기록)
+
+아래 Drive 업로드 방식은 현재 사용하지 않습니다. 현행 대표이미지 저장은 Notion 파일 업로드이며, 학생 크리틱 대시보드 PDF는 교수 컴퓨터로 내려받습니다.
 
 ### 문제 1 해결: 이미지 업로드 속도 개선
 **파일:** `src/app/api/upload/route.ts`
@@ -112,11 +116,11 @@ claude  # ~/doamnu-2026scl 폴더에서 실행
 ```
 이대리에게 이 파일(PROJECT_SETUP.md)을 읽으라고 하면 바로 컨텍스트 파악 가능.
 
-### Step 3: 코드 수정 후 배포
+### Step 3: 코드 수정 후 GitHub에 올리기
 ```bash
 git add .
 git commit -m "변경 내용 설명"
-git push  # → GitHub Actions가 자동으로 Cloud Run 배포
+git push
 ```
 
 ### Step 4: GitHub 인증 (처음 push 시)
@@ -142,8 +146,7 @@ NOTION_DB_STUDENTS=d45987c1-bf1e-82db-8fd4-0725ebf3fe3e
 NOTION_DB_SESSIONS=10f987c1-bf1e-8358-a156-87974c317f23
 NOTION_DB_EVALUATIONS=15a987c1-bf1e-82c6-9885-07dd84148d1e
 NOTION_DB_ADVICE=bed987c1-bf1e-8203-a73c-87ff0717f76d
-GOOGLE_DRIVE_IMAGE_ROOT_FOLDER_ID=...
-GEMINI_API_KEY=...
+OPENROUTER_API_KEY=...
 NEXTAUTH_SECRET=...
 NEXTAUTH_URL=http://localhost:3000
 GOOGLE_CLIENT_ID=...
@@ -160,12 +163,11 @@ npm run dev  # http://localhost:3000
 
 | 경로 | 역할 |
 |---|---|
-| `POST /api/upload` | 이미지 리사이징 + Drive 업로드 |
-| `POST /api/save` | 평가 기록 Notion 저장 |
+| `POST /api/save` | 평가 기록·800픽셀 대표이미지 Notion 저장 |
 | `GET /api/scl?studentId=` | 학생 평가 이력 조회 |
 | `GET /api/init-data` | 학생/세션 목록 초기 로딩 |
-| `POST /api/advice` | Gemini AI 조언 생성 |
-| `POST /api/export-pdf` | PDF 생성 + Drive 업로드 |
+| `POST /api/advice` | 학생 크리틱 대시보드용 AI 젠지 조언 생성·Notion 저장 |
+| `POST /api/export-pdf` | 학생 크리틱 대시보드 PDF 생성·다운로드 |
 
 ---
 
