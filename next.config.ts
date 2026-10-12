@@ -2,9 +2,6 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  outputFileTracingIncludes: {
-    "/api/export-pdf": ["./node_modules/@sparticuz/chromium/bin/**/*"],
-  },
   images: {
     remotePatterns: [
       {

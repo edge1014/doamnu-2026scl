@@ -16,6 +16,7 @@
 # next.js
 /.next/
 /out/
+/public/chromium-pack.tar
 
 # production
 /build

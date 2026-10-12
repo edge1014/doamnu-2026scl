@@ -44,9 +44,9 @@ export async function POST(req: NextRequest) {
     let pdfBuffer: Buffer;
     try {
       const isVercel = Boolean(process.env.VERCEL);
-      const chromium = isVercel ? (await import("@sparticuz/chromium")).default : null;
+      const chromium = isVercel ? (await import("@sparticuz/chromium-min")).default : null;
       const executablePath = chromium
-        ? await chromium.executablePath()
+        ? await chromium.executablePath(`${req.nextUrl.origin}/chromium-pack.tar`)
         : process.env.PUPPETEER_EXECUTABLE_PATH || await ((await import("puppeteer")).default.executablePath());
       browser = await puppeteer.launch({
         headless: true,

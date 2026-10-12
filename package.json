@@ -4,13 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/pack-chromium.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
     "@notionhq/client": "^5.22.0",
-    "@sparticuz/chromium": "^143.0.4",
+    "@sparticuz/chromium-min": "^143.0.4",
     "chart.js": "^4.5.1",
     "fflate": "^0.8.3",
     "lucide-react": "^1.16.0",
@@ -23,6 +24,7 @@
     "sharp": "^0.34.5"
   },
   "devDependencies": {
+    "@sparticuz/chromium": "^143.0.4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
