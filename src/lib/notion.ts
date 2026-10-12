@@ -1,6 +1,7 @@
 import { Client } from "@notionhq/client";
 import { DEFAULT_SEMESTER, type SemesterKey } from "@/lib/semester";
 import { chooseJournalPlacement } from "@/lib/notion-journal-placement";
+import type { JournalLayout } from "@/lib/notion-journal-mode";
 
 // Initialize Notion Client
 const token = process.env.NOTION_TOKEN;
@@ -793,10 +794,12 @@ export interface NotionPageInput {
   sessions: Session[];
   students: Student[];
   evaluations: Record<string, Evaluation>; // studentId → Evaluation
+  layout: JournalLayout;
+  division?: "1분반" | "2분반";
 }
 
 const JOURNAL_MARKER = "평가폼 자동 생성";
-const JOURNAL_TITLES = ["과제", "분반별 총평", "개인별 크리틱 및 평가"];
+const JOURNAL_TITLES = ["과제", "분반별 총평", "개인별 크리틱 및 평가", "총평", "개별 크리틱"];
 
 function getSemesterMainPageId(semester: SemesterKey): string {
   if (semester === "2026-1") {
@@ -848,15 +851,95 @@ async function findOrCreateJournalPage(parentId: string, date: string, sessions:
   return { id: page.id, url: page.url };
 }
 
+async function findOrCreateClassJournalPage(parentId: string, division: "1분반" | "2분반", date: string, session: Session): Promise<{ id: string; url: string }> {
+  if (!notion) throw new Error("Notion이 설정되지 않았습니다.");
+  const mainChildren = await listAllChildBlocks(parentId);
+  const classPages = mainChildren.filter((block) => block.type === "child_page" && blockTitle(block) === division);
+  if (classPages.length > 1) throw new Error(`${division} 페이지가 학기 메인페이지에 여러 개 있습니다.`);
+  const classPage: any = classPages[0] || await notion.pages.create({
+    parent: { page_id: parentId },
+    properties: { title: { title: [{ text: { content: division } }] } },
+  });
+
+  const mmdd = date.slice(5, 7) + date.slice(8, 10);
+  const sessionTitle = session.sessionName.replace(/^\d{4}[\s_-]*/, "").trim();
+  const title = `${mmdd} ${sessionTitle || "수업"}`;
+  const siblings = await listAllChildBlocks(classPage.id);
+  const matches = siblings.filter((block) => block.type === "child_page" && blockTitle(block) === title);
+  if (matches.length > 1) throw new Error(`${division}의 ${title} 페이지가 여러 개 있습니다.`);
+  if (matches.length === 1) {
+    const existing: any = await notion.pages.retrieve({ page_id: matches[0].id });
+    return { id: existing.id, url: existing.url };
+  }
+
+  const previous = [...siblings].reverse().find((block) => block.type === "child_page" && /^\d{4}(?!\d)/.test(blockTitle(block)) && blockTitle(block).slice(0, 4) < mmdd);
+  const position = previous
+    ? { type: "after_block" as const, after_block: { id: previous.id } }
+    : { type: "page_start" as const };
+  const created: any = await notion.pages.create({
+    parent: { page_id: classPage.id },
+    properties: { title: { title: [{ text: { content: title } }] } },
+    position,
+  });
+  return { id: created.id, url: created.url };
+}
+
+async function ensureManualAssignment(pageId: string, sessions: Session[], division?: "1분반" | "2분반"): Promise<void> {
+  if (!notion) return;
+  const blocks = await listAllChildBlocks(pageId);
+  if (blocks.some((block) => block.type === "toggle" && blockTitle(block) === "제시된 과제")) return;
+  const descriptions = sessions
+    .map((session) => ({ label: session.division || division || "", text: session.description.trim() }))
+    .filter((item) => item.text);
+  const assignment = descriptions.length === 0
+    ? "(이곳에 교수가 제시한 과제를 직접 작성해 주세요.)"
+    : descriptions.length === 1
+      ? descriptions[0].text
+      : descriptions.map((item) => `${item.label}: ${item.text}`).join("\n\n");
+  await notion.blocks.children.append({
+    block_id: pageId,
+    children: [{ object: "block", type: "toggle", toggle: {
+      rich_text: buildRichText("제시된 과제"),
+      children: [{ object: "block", type: "paragraph", paragraph: { rich_text: buildRichText(assignment) } }],
+    } }],
+    position: { type: "start" },
+  });
+}
+
+async function assertNoOppositeJournal(mainPageId: string, date: string, layout: JournalLayout): Promise<void> {
+  const mmdd = date.slice(5, 7) + date.slice(8, 10);
+  const mainChildren = await listAllChildBlocks(mainPageId);
+  const candidates: any[] = [];
+  if (layout === "separate") {
+    candidates.push(...mainChildren.filter((block) => block.type === "child_page" && new RegExp(`^${mmdd}(?!\\d)`).test(blockTitle(block))));
+  } else {
+    for (const classPage of mainChildren.filter((block) => block.type === "child_page" && ["1분반", "2분반"].includes(blockTitle(block)))) {
+      const classChildren = await listAllChildBlocks(classPage.id);
+      candidates.push(...classChildren.filter((block) => block.type === "child_page" && new RegExp(`^${mmdd}(?!\\d)`).test(blockTitle(block))));
+    }
+  }
+  for (const candidate of candidates) {
+    const blocks = await listAllChildBlocks(candidate.id);
+    if (blocks.some((block) => block.type === "heading_3" && blockTitle(block) === `${JOURNAL_MARKER} · ${date}`)) {
+      throw new Error(`${mmdd} 수업일지가 이미 ${layout === "separate" ? "공통" : "분반별"} 형식으로 생성되어 있습니다. 수기 내용을 보호하기 위해 자동으로 다른 형식의 중복 페이지를 만들지 않았습니다.`);
+    }
+  }
+}
+
 export async function generateNotionPage(input: NotionPageInput): Promise<{ success: boolean; url?: string; error?: string }> {
   if (!notion) {
     return { success: false, error: "Notion 클라이언트가 설정되지 않았습니다." };
   }
 
-  const { semester, date, sessions, students, evaluations } = input;
+  const { semester, date, sessions, students, evaluations, layout, division } = input;
 
   try {
-    const page = await findOrCreateJournalPage(getSemesterMainPageId(semester), date, sessions);
+    if (layout === "separate" && !division) throw new Error("분반별 페이지에는 분반 정보가 필요합니다.");
+    const mainPageId = getSemesterMainPageId(semester);
+    await assertNoOppositeJournal(mainPageId, date, layout);
+    const page = layout === "combined"
+      ? await findOrCreateJournalPage(mainPageId, date, sessions)
+      : await findOrCreateClassJournalPage(mainPageId, division!, date, sessions[0]);
     const existingBlocks = await listAllChildBlocks(page.id);
     const markerText = `${JOURNAL_MARKER} · ${date}`;
     let marker = existingBlocks.find((block) => block.type === "heading_3" && blockTitle(block) === markerText);
@@ -868,6 +951,7 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
       });
       marker = response.results[0];
     }
+    await ensureManualAssignment(page.id, sessions, division);
 
     // 재실행 시 자동 생성한 블록만 바꾼다. 페이지의 수기 작성 내용과 관리 DB는 보존한다.
     const currentBlocks = await listAllChildBlocks(page.id);
@@ -923,51 +1007,37 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
       };
     };
 
-    const classSessions = (["1분반", "2분반"] as const).map((cls) => ({
+    const classSessions = (layout === "combined" ? ["1분반", "2분반"] as const : [division!] as Array<"1분반" | "2분반">).map((cls) => ({
       cls,
-      session: sessions.find((item) => item.division === cls) || (sessions.length === 1 && !sessions[0].division ? sessions[0] : undefined),
+      session: sessions.find((item) => item.division === cls) || sessions.find((item) => !item.division),
     }));
-    const descriptions = classSessions.map(({ cls, session }) => ({ cls, name: session?.sessionName || "", text: session?.description || "" }));
-    const sameDescription = descriptions[0].text === descriptions[1].text;
-    const assignmentName = sessions.length === 1 ? sessions[0].sessionName : "수업 과제";
-    const assignmentChildren: any[] = sameDescription
-      ? [{ object: "block", type: "paragraph", paragraph: { rich_text: buildRichText(descriptions[0].text || "(과제 설명 없음)") } }]
-      : descriptions.map(({ cls, name, text }) => ({
+    const overallChildren = layout === "combined"
+      ? classSessions.map(({ cls, session }) => ({
           object: "block", type: "toggle", toggle: {
-            rich_text: buildRichText(`${cls}${name ? ` · ${name}` : ""}`),
-            children: [{ object: "block", type: "paragraph", paragraph: { rich_text: buildRichText(text || "(과제 설명 없음)") } }],
+            rich_text: buildRichText(cls),
+            children: [{ object: "block", type: "paragraph", paragraph: {
+              rich_text: buildRichText((cls === "1분반" ? session?.overallClass1 : session?.overallClass2) || "(총평 없음)"),
+            } }],
           },
-        }));
+        }))
+      : [{ object: "block", type: "paragraph", paragraph: {
+          rich_text: buildRichText((division === "1분반" ? sessions[0]?.overallClass1 : sessions[0]?.overallClass2) || "(총평 없음)"),
+        } }];
 
     const blocks: any[] = [
       {
         object: "block",
         type: "toggle",
         toggle: {
-          rich_text: buildRichText(`과제 : ${assignmentName}`),
-          children: assignmentChildren,
+          rich_text: buildRichText("총평"),
+          children: overallChildren,
         },
       },
       {
         object: "block",
         type: "toggle",
         toggle: {
-          rich_text: [{ type: "text", text: { content: "분반별 총평" } }],
-          children: classSessions.map(({ cls, session }) => ({
-            object: "block", type: "toggle", toggle: {
-              rich_text: buildRichText(`${cls} 총평${session ? ` · ${session.sessionName}` : ""}`),
-              children: [{ object: "block", type: "paragraph", paragraph: {
-                rich_text: buildRichText((cls === "1분반" ? session?.overallClass1 : session?.overallClass2) || "(총평 없음)"),
-              } }],
-            },
-          })),
-        },
-      },
-      {
-        object: "block",
-        type: "toggle",
-        toggle: {
-          rich_text: [{ type: "text", text: { content: "개인별 크리틱 및 평가" } }],
+          rich_text: buildRichText("개별 크리틱"),
         },
       },
     ];
@@ -977,8 +1047,8 @@ export async function generateNotionPage(input: NotionPageInput): Promise<{ succ
       children: blocks,
       position: { type: "after_block", after_block: { id: marker.id } },
     });
-    const personalBlock = created.results[2];
-    for (const cls of ["1분반", "2분반"] as const) {
+    const personalBlock = created.results[1];
+    for (const { cls } of classSessions) {
       const ordered = students.filter((student) => student.cls === cls).sort((a, b) => a.order - b.order);
       const classBlock = await notion.blocks.children.append({
         block_id: personalBlock.id,

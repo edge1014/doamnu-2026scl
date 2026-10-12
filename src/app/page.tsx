@@ -110,6 +110,7 @@ export default function Home() {
 
   // Form States
   const [currentSessionId, setCurrentSessionId] = useState("");
+  const [notionJournalMode, setNotionJournalMode] = useState<"auto" | "combined" | "separate">("auto");
   const [selectedProfessor, setSelectedProfessor] = useState("김태훈");
   const [overallText, setOverallText] = useState("");
   const [currentFilter, setCurrentFilter] = useState<"1분반" | "2분반" | "all">("1분반");
@@ -563,7 +564,7 @@ export default function Home() {
     }
   };
 
-  // 선택한 수업 날짜의 두 분반을 학기 메인페이지의 한 일지로 반영
+  // 담당 교수가 겹치면 공통 일지, 다르면 분반별 페이지로 반영한다.
   const handleGenerateNotionPage = async () => {
     if (isReadOnly) return;
     if (!currentSessionId) {
@@ -576,11 +577,12 @@ export default function Home() {
       const res = await fetch("/api/notion-page", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: currentSessionId, semester: selectedSemester }),
+        body: JSON.stringify({ sessionId: currentSessionId, semester: selectedSemester, mode: notionJournalMode }),
       });
       const data = await res.json();
       if (res.ok && data.success) {
         showToast(data.message || "Notion 수업 일지 반영 완료!");
+        setNotionJournalMode("auto");
         if (data.url) {
           window.open(data.url, "_blank", "noopener,noreferrer");
         }
@@ -754,6 +756,20 @@ export default function Home() {
                 <div style={{ height: "1px", background: "var(--border-subtle)", margin: "2px 4px" }} />
 
                 {/* Notion 학기별 수업 일지 생성·갱신 */}
+                <label htmlFor="settings-notion-mode" style={{ padding: "4px 12px 0", fontSize: "12px", color: "var(--text-muted)" }}>
+                  Notion 수업 페이지 정리 방식
+                </label>
+                <select
+                  id="settings-notion-mode"
+                  value={notionJournalMode}
+                  onChange={(event) => setNotionJournalMode(event.target.value as "auto" | "combined" | "separate")}
+                  disabled={isReadOnly || notionPageGenerating}
+                  style={{ margin: "0 8px", padding: "8px", border: "1px solid var(--border-subtle)", borderRadius: "8px", background: "var(--bg-card)", color: "var(--text-main)", fontSize: "13px" }}
+                >
+                  <option value="auto">자동 · 담당 교수 비교</option>
+                  <option value="combined">공통 세션 · 한 페이지</option>
+                  <option value="separate">분반별 세션 · 각각 페이지</option>
+                </select>
                 <button
                   id="settings-notion-page"
                   onClick={handleGenerateNotionPage}

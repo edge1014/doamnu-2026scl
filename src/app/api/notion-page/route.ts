@@ -10,6 +10,7 @@ import {
 } from "@/lib/notion";
 import { isReadOnlySemester, normalizeSemester } from "@/lib/semester";
 import { combineEvaluationsForSessionDate } from "@/lib/session-progress";
+import { resolveJournalLayout, type JournalMode } from "@/lib/notion-journal-mode";
 
 export async function POST(req: NextRequest) {
   // 1. 인증 확인 (교수 로그인 필요)
@@ -27,6 +28,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const { sessionId } = body;
   const semester = normalizeSemester(body.semester);
+  const requestedMode: JournalMode = ["auto", "combined", "separate"].includes(body.mode) ? body.mode : "auto";
 
   if (isReadOnlySemester(semester)) {
     return NextResponse.json({ error: "1학기는 조회 전용입니다." }, { status: 403 });
@@ -60,23 +62,39 @@ export async function POST(req: NextRequest) {
       students,
       semester === "2026-2"
     );
+    const layout = resolveJournalLayout(requestedMode, daySessions, students, evaluations);
+    if (layout === "undetermined") {
+      return NextResponse.json({ error: "두 분반의 평가 담당 교수 기록이 아직 모이지 않았습니다. Notion 정리 방식을 공통 또는 분반별로 직접 선택해 주세요." }, { status: 409 });
+    }
 
-    const result = await generateNotionPage({
-      semester,
-      date: targetSession.date.slice(0, 10),
-      sessions: daySessions,
-      students,
-      evaluations,
-    });
-
-    if (!result.success) {
-      return NextResponse.json({ error: result.error }, { status: 500 });
+    const date = targetSession.date.slice(0, 10);
+    const results = layout === "combined"
+      ? [await generateNotionPage({ semester, date, sessions: daySessions, students, evaluations, layout })]
+      : await Promise.all((["1분반", "2분반"] as const).map(async (division) => {
+          const classSession = daySessions.find((item) => item.division === division)
+            || daySessions.find((item) => !item.division);
+          if (!classSession) return null;
+          const classStudents = students.filter((student) => student.cls === division);
+          const classEvaluations = Object.fromEntries(classStudents.flatMap((student) =>
+            evaluations[student.id] ? [[student.id, evaluations[student.id]]] : []
+          ));
+          return generateNotionPage({
+            semester, date, sessions: [classSession], students: classStudents,
+            evaluations: classEvaluations, layout, division,
+          });
+        }));
+    const generated = results.filter((item): item is NonNullable<typeof item> => item !== null);
+    const failed = generated.find((item) => !item.success);
+    if (failed || generated.length === 0) {
+      return NextResponse.json({ error: failed?.error || "생성할 분반 세션이 없습니다." }, { status: 500 });
     }
 
     return NextResponse.json({
       success: true,
-      url: result.url,
-      message: `${targetSession.date.slice(0, 10)} 수업 일지가 학기 페이지에 생성·갱신되었습니다.`,
+      layout,
+      url: generated[targetSession.division === "2분반" && generated.length > 1 ? 1 : 0].url,
+      urls: generated.map((item) => item.url),
+      message: `${date} ${layout === "combined" ? "공통 수업 일지" : "분반별 수업 페이지"}가 생성·갱신되었습니다.`,
     });
   } catch (error: any) {
     console.error("Notion page generation error:", error);
