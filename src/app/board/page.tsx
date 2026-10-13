@@ -886,7 +886,7 @@ function StudentBoardContent() {
               </div>
 
               <div className="chart-wrap" style={{ flex: 1, minHeight: 0, position: "relative", width: "100%", height: pdfMode ? "220px" : "auto", overflow: "hidden" }}>
-                <canvas ref={chartRef} id="board-chart" style={{ width: "100%", height: "100%" }} />
+                <canvas ref={chartRef} id="board-chart" style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
               </div>
             </div>
           </div>
