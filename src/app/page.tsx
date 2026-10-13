@@ -6,6 +6,7 @@ import Link from "next/link";
 import { DEFAULT_SEMESTER, normalizeSemester, type SemesterKey } from "@/lib/semester";
 import { combineEvaluationsForSessionDate } from "@/lib/session-progress";
 import { saveHealthReports } from "@/lib/health-report-download";
+import { prepareEvaluationImage } from "@/lib/prepare-evaluation-image";
 import { 
   LogOut, 
   BookOpen, 
@@ -458,7 +459,7 @@ export default function Home() {
     if (currentImageUrl.startsWith("blob:")) URL.revokeObjectURL(currentImageUrl);
     setPendingImageFile(file);
     setCurrentImageUrl(URL.createObjectURL(file));
-    showToast("이미지가 선택되었습니다. 평가 저장을 누르면 Notion에 함께 저장됩니다.");
+    showToast("이미지가 선택되었습니다. 평가 저장 시 800픽셀 JPG로 줄여 Notion에 저장합니다.");
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -494,18 +495,35 @@ export default function Home() {
       formData.set("score", String(score));
       formData.set("critic", critic);
       formData.set("semester", selectedSemester);
-      if (pendingImageFile) formData.set("image", pendingImageFile);
+      if (pendingImageFile) {
+        const image = await prepareEvaluationImage(pendingImageFile, selectedStudent.name);
+        formData.set("image", image);
+      }
       const res = await fetch("/api/save", { method: "POST", body: formData });
-
-      const data = await res.json();
-      if (res.ok && data.success) {
+      const responseText = await res.text();
+      let data: { success?: boolean; evaluation?: Evaluation; error?: string } | null = null;
+      try {
+        const parsed: unknown = JSON.parse(responseText);
+        if (parsed && typeof parsed === "object") {
+          data = parsed as { success?: boolean; evaluation?: Evaluation; error?: string };
+        } else {
+          throw new Error("Invalid response");
+        }
+      } catch {
+        if (res.status === 413) {
+          throw new Error("이미지 전송 크기가 서버 제한을 초과했습니다. 더 작은 이미지를 선택해 주세요.");
+        }
+        throw new Error(`서버 응답을 읽지 못했습니다. (${res.status}) 잠시 후 다시 시도해 주세요.`);
+      }
+      if (res.ok && data.success && data.evaluation) {
+        const evaluation = data.evaluation;
         setEvalMap((prev) => ({
           ...prev,
-          [selectedStudent.id]: data.evaluation,
+          [selectedStudent.id]: evaluation,
         }));
         setDateEvalMap((prev) => ({
           ...prev,
-          [selectedStudent.id]: data.evaluation,
+          [selectedStudent.id]: evaluation,
         }));
         showToast(`${selectedStudent.name} 평가 저장 완료!`);
         if (currentImageUrl.startsWith("blob:")) URL.revokeObjectURL(currentImageUrl);
@@ -1110,7 +1128,7 @@ export default function Home() {
                 <>
                   <Upload style={{ width: "28px", height: "28px" }} />
                   <span style={{ fontSize: "13px", fontWeight: 500 }}>과제물 이미지 업로드 (클릭 또는 드래그)</span>
-                  <span style={{ fontSize: "11px", color: "var(--text-light)" }}>평가 저장 시 가로 최대 800픽셀 JPG로 변환해 Notion에 함께 저장합니다.</span>
+                  <span style={{ fontSize: "11px", color: "var(--text-light)" }}>평가 저장 시 업로드 전에 가로 최대 800픽셀 JPG로 변환해 Notion에 함께 저장합니다.</span>
                 </>
               )}
             </div>
