@@ -271,6 +271,8 @@ function StudentBoardContent() {
   const selectedClassDate = pdfMode ? "" : hasChosenClassDate ? requestedClassDate : availableClassDates[0] || "";
   const changeClassDate = (date: string) => {
     const params = new URLSearchParams(searchParams.toString());
+    params.set("student", student?.id || studentParamId);
+    params.set("semester", selectedSemester);
     if (date) params.set("classDate", date);
     else params.delete("classDate");
     router.replace(`/board?${params.toString()}`, { scroll: false });
