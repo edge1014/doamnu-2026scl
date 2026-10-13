@@ -96,6 +96,7 @@ function StudentBoardContent() {
   const [loading, setLoading] = useState(true);
   const [adviceLoading, setAdviceLoading] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [dateDropdownOpen, setDateDropdownOpen] = useState(false);
   const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
   const [historyDropdownOpen, setHistoryDropdownOpen] = useState(false);
   const [histOpen, setHistOpen] = useState(pdfMode); // Expand history automatically in PDF mode
@@ -275,7 +276,7 @@ function StudentBoardContent() {
     params.set("semester", selectedSemester);
     if (date) params.set("classDate", date);
     else params.delete("classDate");
-    router.replace(`/board?${params.toString()}`, { scroll: false });
+    window.history.replaceState(null, "", `/board?${params.toString()}`);
   };
   const getFilteredRecords = () => {
     if (pdfMode || period === "all") return sortedRecords;
@@ -407,6 +408,9 @@ function StudentBoardContent() {
       const target = e.target as HTMLElement;
       if (!target.closest(".period-wrap")) {
         setDropdownOpen(false);
+      }
+      if (!target.closest(".class-date-wrap")) {
+        setDateDropdownOpen(false);
       }
       if (!target.closest(".history-period-wrap")) {
         setHistoryDropdownOpen(false);
@@ -764,20 +768,32 @@ function StudentBoardContent() {
           </div>
 
           {/* The selected lesson date anchors recent-period views. */}
-          {!pdfMode && <label className="no-print" style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: "var(--text-muted)", fontWeight: 600 }}>
-            수업 날짜
-            <select
+          {!pdfMode && <div className="class-date-wrap no-print" style={{ position: "relative", display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: "var(--text-muted)", fontWeight: 600 }}>
+            <span>수업 날짜</span>
+            <button
+              type="button"
               aria-label="수업 날짜 선택"
-              value={hasChosenClassDate ? selectedClassDate : ""}
-              onChange={(event) => changeClassDate(event.target.value)}
-              style={{ maxWidth: "170px", height: "28px", padding: "3px 7px", border: "1px solid var(--border-subtle)", borderRadius: "6px", background: "var(--bg-card)", color: "var(--text-main)", fontSize: "11px", cursor: "pointer" }}
+              aria-expanded={dateDropdownOpen}
+              onClick={() => setDateDropdownOpen(!dateDropdownOpen)}
+              className="btn"
+              style={{ padding: "3px 10px", height: "28px", fontSize: "11px", background: "var(--bg-card)", border: "1px solid var(--border-subtle)", color: "var(--text-main)", gap: "4px", cursor: "pointer" }}
             >
-              <option value="">최신 수업</option>
-              {availableClassDates.map((date) => (
-                <option key={date} value={date}>{date.replaceAll("-", ".")}</option>
+              {hasChosenClassDate ? selectedClassDate.replaceAll("-", ".") : "최신 수업"}
+              <ChevronDown style={{ width: "12px", height: "12px", opacity: 0.5 }} />
+            </button>
+            {dateDropdownOpen && <div className="glass-card" style={{ position: "absolute", top: "32px", right: 0, zIndex: 100, width: "146px", maxHeight: "260px", overflowY: "auto", padding: "5px 0", border: "1px solid var(--border-subtle)", background: "var(--bg-input)" }}>
+              {["", ...availableClassDates].map((date) => (
+                <button
+                  key={date || "latest"}
+                  type="button"
+                  onClick={() => { changeClassDate(date); setDateDropdownOpen(false); }}
+                  style={{ display: "block", width: "100%", padding: "7px 12px", fontSize: "11px", textAlign: "left", border: "none", cursor: "pointer", background: (date ? date === requestedClassDate : !hasChosenClassDate) ? "var(--primary-light)" : "transparent", color: "var(--text-main)" }}
+                >
+                  {date ? date.replaceAll("-", ".") : "최신 수업"}
+                </button>
               ))}
-            </select>
-          </label>}
+            </div>}
+          </div>}
 
           {/* Period filter (hidden in PDF print) */}
           <div className="period-wrap no-print" style={{ position: "relative" }}>
