@@ -73,6 +73,7 @@ function StudentBoardContent() {
   const studentParamId = searchParams.get("student") || "";
   const selectedSemester = normalizeSemester(searchParams.get("semester"));
   const pdfMode = searchParams.get("pdfMode") === "true";
+  const requestedClassDate = searchParams.get("classDate") || "";
 
   const [darkMode, setDarkMode] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -262,6 +263,27 @@ function StudentBoardContent() {
     }
   };
 
+  // Select lessons by their scheduled class date, not the day the professor entered the critique.
+  const recordClassDate = (record: Evaluation) => (sessions.find((item) => item.id === record.sessionPageId)?.date || record.date).slice(0, 10);
+  const sortedRecords = [...allRecords].sort((a, b) => recordClassDate(a).localeCompare(recordClassDate(b)) || a.date.localeCompare(b.date));
+  const availableClassDates = [...new Set(sortedRecords.map(recordClassDate).filter(Boolean))].reverse();
+  const hasChosenClassDate = !pdfMode && availableClassDates.includes(requestedClassDate);
+  const selectedClassDate = pdfMode ? "" : hasChosenClassDate ? requestedClassDate : availableClassDates[0] || "";
+  const changeClassDate = (date: string) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (date) params.set("classDate", date);
+    else params.delete("classDate");
+    router.replace(`/board?${params.toString()}`, { scroll: false });
+  };
+  const getFilteredRecords = () => {
+    if (pdfMode || period === "all") return sortedRecords;
+    const daysMap: Record<string, number> = { "2w": 14, "3w": 21, "1m": 30, "2m": 60, "3m": 90, "4m": 120 };
+    const limitDays = daysMap[period] || 30;
+    const todayInSeoul = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    const baseDate = selectedClassDate || todayInSeoul;
+    return sortedRecords.filter((r) => isWithinRecentClassDays(recordClassDate(r), baseDate, limitDays));
+  };
+
   // 3. Render Chart.js when Records or Period Changes
   useEffect(() => {
     setChartReady(false);
@@ -292,7 +314,7 @@ function StudentBoardContent() {
     }
 
     const labels = filtered.map((r) => {
-      const date = pdfMode ? recordClassDate(r) : r.date;
+      const date = recordClassDate(r);
       return date ? date.substring(5).replace("-", "/") : "";
     });
     const scores = filtered.map((r) => r.score);
@@ -309,7 +331,7 @@ function StudentBoardContent() {
             pointBackgroundColor: "#2A6FBF",
             pointHoverBackgroundColor: "#fff",
             pointHoverBorderColor: "#2A6FBF",
-            pointRadius: 3,
+            pointRadius: filtered.map((r) => selectedClassDate && recordClassDate(r) === selectedClassDate ? 6 : 3),
             pointHoverRadius: 5,
             fill: true,
             tension: 0.4, // Curved bezier line
@@ -375,7 +397,7 @@ function StudentBoardContent() {
         chartInstanceRef.current.destroy();
       }
     };
-  }, [allRecords, period, darkMode, mounted, loading, sessions, pdfMode]);
+  }, [allRecords, period, darkMode, mounted, loading, sessions, pdfMode, requestedClassDate]);
 
   // Click Outside to Close Period Selector Dropdown
   useEffect(() => {
@@ -392,42 +414,23 @@ function StudentBoardContent() {
     return () => document.removeEventListener("click", handleOutsideClick);
   }, []);
 
-  // Filter records based on selected period
-  const recordClassDate = (record: Evaluation) => sessions.find((item) => item.id === record.sessionPageId)?.date || record.date;
-  const getFilteredRecords = () => {
-    if (pdfMode) return [...allRecords].sort((a, b) => recordClassDate(a).localeCompare(recordClassDate(b)));
-    if (period === "all") return allRecords;
-    const now = new Date();
-    const daysMap: Record<string, number> = { "2w": 14, "3w": 21, "1m": 30, "2m": 60, "3m": 90, "4m": 120 };
-    const limitDays = daysMap[period] || 30;
-
-    return allRecords.filter((r) => {
-      if (!r.date) return false;
-      const rDate = new Date(r.date);
-      const diffTime = Math.abs(now.getTime() - rDate.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      return diffDays <= limitDays;
-    });
-  };
-
   // Filter previous records based on selected historyPeriod
   const getFilteredHistoryRecords = () => {
-    const prevRecords = pdfMode ? getFilteredRecords() : allRecords.slice(0, -1);
+    const prevRecords = pdfMode ? getFilteredRecords() : selectedClassDate
+      ? sortedRecords.filter((r) => recordClassDate(r) < selectedClassDate)
+      : sortedRecords.slice(0, -1);
     if (historyPeriod === "all") return prevRecords;
 
     const now = new Date();
     const daysMap: Record<string, number> = { "2w": 14, "3w": 21, "1m": 30, "2m": 60 };
     const limitDays = daysMap[historyPeriod] || 14;
     const todayInSeoul = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+    const baseDate = selectedClassDate || todayInSeoul;
 
     return prevRecords.filter((r) => {
-      const date = pdfMode ? recordClassDate(r) : r.date;
+      const date = recordClassDate(r);
       if (!date) return false;
-      if (pdfMode) return isWithinRecentClassDays(date, todayInSeoul, limitDays);
-      const rDate = new Date(date);
-      const diffTime = Math.abs(now.getTime() - rDate.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      return diffDays <= limitDays;
+      return isWithinRecentClassDays(date, baseDate, limitDays);
     });
   };
 
@@ -446,10 +449,16 @@ function StudentBoardContent() {
 
   // Calculations for stats
   const filtered = getFilteredRecords();
+  const featuredRecord = selectedClassDate
+    ? [...sortedRecords].reverse().find((r) => recordClassDate(r) === selectedClassDate)
+    : filtered[filtered.length - 1];
+  const previousFeaturedRecord = featuredRecord
+    ? [...sortedRecords].reverse().find((r) => recordClassDate(r) < recordClassDate(featuredRecord))
+    : undefined;
   const scores = filtered.map((r) => r.score).filter((s) => s !== null && s !== undefined);
   const avgScore = scores.length > 0 ? parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)) : 0;
-  const latestScore = filtered.length > 0 ? filtered[filtered.length - 1].score : 0;
-  const prevScore = filtered.length > 1 ? filtered[filtered.length - 2].score : null;
+  const latestScore = featuredRecord?.score ?? 0;
+  const prevScore = selectedClassDate ? previousFeaturedRecord?.score ?? null : filtered.length > 1 ? filtered[filtered.length - 2].score : null;
   const trend = prevScore !== null ? parseFloat((latestScore - prevScore).toFixed(1)) : null;
   const maxScore = scores.length > 0 ? Math.max(...scores) : 0;
   const minScore = scores.length > 0 ? Math.min(...scores) : 0;
@@ -752,6 +761,22 @@ function StudentBoardContent() {
             {pdfMode && <div style={{ fontSize: "10px", color: "var(--text-light)", marginTop: "2px" }}>발행일 {new Date().toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" })}</div>}
           </div>
 
+          {/* The selected lesson date anchors recent-period views. */}
+          {!pdfMode && <label className="no-print" style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: "var(--text-muted)", fontWeight: 600 }}>
+            수업 날짜
+            <select
+              aria-label="수업 날짜 선택"
+              value={hasChosenClassDate ? selectedClassDate : ""}
+              onChange={(event) => changeClassDate(event.target.value)}
+              style={{ maxWidth: "170px", height: "28px", padding: "3px 7px", border: "1px solid var(--border-subtle)", borderRadius: "6px", background: "var(--bg-card)", color: "var(--text-main)", fontSize: "11px", cursor: "pointer" }}
+            >
+              <option value="">최신 수업</option>
+              {availableClassDates.map((date) => (
+                <option key={date} value={date}>{date.replaceAll("-", ".")}</option>
+              ))}
+            </select>
+          </label>}
+
           {/* Period filter (hidden in PDF print) */}
           <div className="period-wrap no-print" style={{ position: "relative" }}>
             <button 
@@ -759,7 +784,7 @@ function StudentBoardContent() {
               className="btn" 
               style={{ padding: "3px 10px", height: "26px", fontSize: "11px", background: "var(--bg-card)", border: "1px solid var(--border-subtle)", color: "var(--text-main)", gap: "4px", cursor: "pointer" }}
             >
-              <span>{getPeriodLabel(period)}</span>
+              <span>{getPeriodLabel(period)}{selectedClassDate && period !== "all" ? " · 선택일 기준" : ""}</span>
               <ChevronDown style={{ width: "12px", height: "12px", opacity: 0.5 }} />
             </button>
             {dropdownOpen && (
@@ -798,10 +823,10 @@ function StudentBoardContent() {
             <div className="glass-card" style={{ display: "flex", flexDirection: "column", minHeight: "200px", minWidth: 0 }}>
               <h3 style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-light)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>대표 과제물 이미지</h3>
               <div style={{ flex: 1, background: "rgba(0,0,0,0.02)", border: "1px dashed var(--border-subtle)", borderRadius: "8px", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                {filtered[filtered.length - 1].imageUrl ? (
+                {featuredRecord?.imageUrl ? (
                   <img
-                    src={normalizeDriveUrl(filtered[filtered.length - 1].imageUrl!)}
-                    alt="Latest student submission"
+                    src={normalizeDriveUrl(featuredRecord.imageUrl)}
+                    alt={`${student.name} ${recordClassDate(featuredRecord)} 대표 과제물`}
                     style={{ width: "100%", height: "100%", objectFit: "cover" }}
                     onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                   />
@@ -817,13 +842,13 @@ function StudentBoardContent() {
             {/* Card 2: Score Trend Chart */}
             <div className="glass-card" style={{ display: "flex", flexDirection: "column", minHeight: "200px", minWidth: 0 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                <h3 style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-light)", textTransform: "uppercase", letterSpacing: "0.05em" }}>점수 추이</h3>
+                <h3 style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-light)", textTransform: "uppercase", letterSpacing: "0.05em" }}>점수 추이{selectedClassDate && period !== "all" ? ` · ${selectedClassDate} 기준` : ""}</h3>
                 
                 {/* Stats list */}
                 <div style={{ display: "flex", gap: "4px" }}>
                   <div style={{ background: "rgba(0,0,0,0.02)", border: "1px solid var(--border-subtle)", borderRadius: "6px", padding: "2px 8px", textAlign: "center" }}>
                     <div style={{ fontSize: "14px", fontWeight: 700 }}>{fmt(latestScore)}</div>
-                    <div style={{ fontSize: "9px", color: "var(--text-light)" }}>최근</div>
+                    <div style={{ fontSize: "9px", color: "var(--text-light)" }}>{hasChosenClassDate ? "선택일" : "최근"}</div>
                   </div>
                   <div style={{ background: "rgba(0,0,0,0.02)", border: "1px solid var(--border-subtle)", borderRadius: "6px", padding: "2px 8px", textAlign: "center" }}>
                     <div style={{ fontSize: "14px", fontWeight: 700, color: trend && trend > 0 ? "var(--success)" : trend && trend < 0 ? "var(--danger)" : "var(--text-main)" }}>
@@ -850,16 +875,16 @@ function StudentBoardContent() {
 
           {/* Card 3: Recent Evaluation details */}
           <div className="glass-card" style={{ marginBottom: "10px" }}>
-            <h3 style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-light)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>최근 평가 피드백</h3>
+            <h3 style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-light)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>{hasChosenClassDate ? "선택한 수업의 평가 피드백" : "최근 평가 피드백"}</h3>
             <div style={{ background: "rgba(0,0,0,0.02)", border: "1px solid var(--border-subtle)", borderRadius: "8px", padding: "12px 16px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "10px" }}>
-                <span style={{ fontSize: "14px", fontWeight: 700 }}>{pdfMode ? recordClassDate(filtered[filtered.length - 1]) : filtered[filtered.length - 1].date}</span>
+                <span style={{ fontSize: "14px", fontWeight: 700 }}>{recordClassDate(featuredRecord!)}</span>
                 <span className="font-display" style={{ fontSize: "32px", fontWeight: 700, color: "#185FA5", lineHeight: 1 }}>
-                  {fmt(filtered[filtered.length - 1].score)}<span style={{ fontSize: "12px", color: "var(--text-light)", marginLeft: "2px" }}>/ 10</span>
+                  {fmt(featuredRecord!.score)}<span style={{ fontSize: "12px", color: "var(--text-light)", marginLeft: "2px" }}>/ 10</span>
                 </span>
               </div>
               <p style={{ fontSize: "14px", color: "var(--text-main)", lineHeight: 1.75, whiteSpace: "pre-wrap" }}>
-                {filtered[filtered.length - 1].critic || "(크리틱 내용 없음)"}
+                {featuredRecord!.critic || "(크리틱 내용 없음)"}
               </p>
             </div>
           </div>
@@ -930,7 +955,7 @@ function StudentBoardContent() {
                       className="glass-card"
                     >
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
-                        <span style={{ fontSize: "12px", color: "var(--text-light)" }}>{pdfMode ? recordClassDate(r) : r.date}</span>
+                        <span style={{ fontSize: "12px", color: "var(--text-light)" }}>{recordClassDate(r)}</span>
                         <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                           <span style={{ fontSize: "15px", fontWeight: 700 }}>{fmt(r.score)}</span>
                           <span style={{ fontSize: "10px", color: "var(--text-light)" }}>/ 10</span>
@@ -991,7 +1016,7 @@ function StudentBoardContent() {
           {/* Footer details */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "12px" }}>
             <div style={{ fontSize: "11px", color: "var(--text-light)" }}>
-              {allRecords.length}회 평가 &middot; {pdfMode ? recordClassDate(filtered[0]) : allRecords[0].date} – {pdfMode ? recordClassDate(filtered[filtered.length - 1]) : allRecords[allRecords.length - 1].date}
+              {allRecords.length}회 평가 &middot; {recordClassDate(sortedRecords[0])} – {recordClassDate(sortedRecords[sortedRecords.length - 1])}
             </div>
             <div style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 500 }}>
               담당교수 : 김태훈 &middot; 정미연 &middot; 하신해
