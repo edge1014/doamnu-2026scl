@@ -840,12 +840,12 @@ function StudentBoardContent() {
             {/* Card 1: Representing Image */}
             <div className="glass-card" style={{ display: "flex", flexDirection: "column", minHeight: "200px", minWidth: 0 }}>
               <h3 style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-light)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>대표 과제물 이미지</h3>
-              <div style={{ flex: 1, background: "rgba(0,0,0,0.02)", border: "1px dashed var(--border-subtle)", borderRadius: "8px", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ width: "100%", aspectRatio: "8 / 5", flex: "none", background: "rgba(0,0,0,0.02)", border: "1px dashed var(--border-subtle)", borderRadius: "8px", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {featuredRecord?.imageUrl ? (
                   <img
                     src={normalizeDriveUrl(featuredRecord.imageUrl)}
                     alt={`${student.name} ${recordClassDate(featuredRecord)} 대표 과제물`}
-                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    style={{ display: "block", width: "100%", height: "100%", objectFit: "contain" }}
                     onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                   />
                 ) : (
@@ -885,7 +885,7 @@ function StudentBoardContent() {
                 </div>
               </div>
 
-              <div className="chart-wrap" style={{ flex: 1, position: "relative", width: "100%", height: pdfMode ? "220px" : "auto", overflow: "hidden" }}>
+              <div className="chart-wrap" style={{ flex: 1, minHeight: 0, position: "relative", width: "100%", height: pdfMode ? "220px" : "auto", overflow: "hidden" }}>
                 <canvas ref={chartRef} id="board-chart" style={{ width: "100%", height: "100%" }} />
               </div>
             </div>
